@@ -1,0 +1,18 @@
+services:
+  embedding-api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: embedding-api-server:latest
+    ports:
+      - "${HOST_PORT:-34749}:8000"
+    environment:
+      BIND_ADDR: 0.0.0.0:8000
+      MODELS_DIR: /app/AI_Models
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
+      MODEL_TTL_SECONDS: ${MODEL_TTL_SECONDS:-7200}
+      USE_GPU: ${USE_GPU:-true}
+      GPU_AVAILABLE: ${GPU_AVAILABLE:-false}
+    volumes:
+      - ./AI_Models:/app/AI_Models:ro
+    restart: unless-stopped

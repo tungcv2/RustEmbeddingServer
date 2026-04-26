@@ -1,0 +1,353 @@
+AI_Models
+target/
+
+# Ignore bin and obj directories
+bin/
+obj/
+
+# Ignore .vs directory
+.vs/
+
+# Ignore user-specific files
+*.user
+
+# Ignore Docker-related files
+docker-compose.override.yml
+
+# Ignore IDE-specific files
+.idea/
+*.suo
+*.userosscache
+
+# Ignore debug and release directories
+Debug/
+Release/
+
+# Ignore local settings files
+appsettings.Development.json
+
+# Ignore ONNX runtime files
+runtimes/
+
+# Ignore temporary files
+*.tmp
+*.bak
+
+# Ignore log files
+*.log
+
+# Ignore environment files
+.env
+
+# Ignore DS_Store files (macOS)
+.DS_Store
+
+# Ignore node_modules (if any)
+node_modules/
+
+# Ignore package-lock.json (if any)
+package-lock.json
+
+# Ignore coverage reports
+coverage/
+*.coverage
+
+# Ignore test results
+TestResults/
+
+# Ignore Docker-related files
+.dockerignore
+
+# Ignore solution user options
+*.sln.user
+
+# Ignore project user options
+*.csproj.user
+
+# Ignore local history (if any)
+.localhistory/
+
+# Ignore ReSharper files
+_ReSharper*/
+*.resharper
+
+# Ignore Rider files
+.riders/
+
+# Ignore Visual Studio Code files
+.vscode/
+
+# Ignore NuGet packages
+packages/
+
+# Ignore build output
+build/
+
+# Ignore test output
+test-output/
+
+# Ignore any temporary or backup files
+*.swp
+*.swo
+
+# Ignore any cache files
+.cache/
+
+# Ignore any local configuration files
+local.settings.json
+
+# Ignore any secrets files
+secrets.json
+
+# Ignore any temporary directories
+temp/
+
+# Ignore any backup directories
+backup/
+
+# Ignore any archive files
+*.zip
+*.tar
+*.gz
+
+# Ignore any executable files
+*.exe
+*.dll
+
+# Ignore any database files
+*.db
+*.sqlite
+
+# Ignore any migration files
+Migrations/
+
+# Ignore any test files
+*.Test.cs
+
+# Ignore any configuration files
+*.config
+
+# Ignore any settings files
+*.settings
+
+# Ignore any resource files
+*.resx
+
+# Ignore any design files
+*.designer.cs
+
+# Ignore any generated files
+*.g.cs
+*.g.i.cs
+*.g.vb
+
+# Ignore any temporary ASP.NET files
+*.compiled
+
+# Ignore any temporary Razor files
+*.razor.cs
+
+# Ignore any temporary JavaScript files
+*.min.js
+*.min.css
+
+# Ignore any temporary TypeScript files
+*.js.map
+*.css.map
+
+# Ignore any temporary JSON files
+*.json.backup
+
+# Ignore any temporary XML files
+*.xml.backup
+
+# Ignore any temporary HTML files
+*.html.backup
+
+# Ignore any temporary text files
+*.txt.backup
+
+# Ignore any temporary markdown files
+*.md.backup
+
+# Ignore any temporary PDF files
+*.pdf.backup
+
+# Ignore any temporary image files
+*.png.backup
+*.jpg.backup
+*.jpeg.backup
+*.gif.backup
+*.bmp.backup
+
+# Ignore any temporary video files
+*.mp4.backup
+*.avi.backup
+*.mkv.backup
+
+# Ignore any temporary audio files
+*.mp3.backup
+*.wav.backup
+*.ogg.backup
+
+# Ignore any temporary font files
+*.ttf.backup
+*.otf.backup
+
+# Ignore any temporary icon files
+*.ico.backup
+
+# Ignore any temporary SVG files
+*.svg.backup
+
+# Ignore any temporary CSV files
+*.csv.backup
+
+# Ignore any temporary Excel files
+*.xls.backup
+*.xlsx.backup
+
+# Ignore any temporary PowerPoint files
+*.ppt.backup
+*.pptx.backup
+
+# Ignore any temporary Word files
+*.doc.backup
+*.docx.backup
+
+# Ignore any temporary archive files
+*.rar.backup
+*.7z.backup
+
+# Ignore any temporary log files
+*.log.backup
+
+# Ignore any temporary configuration files
+*.config.backup
+
+# Ignore any temporary settings files
+*.settings.backup
+
+# Ignore any temporary resource files
+*.resx.backup
+
+# Ignore any temporary design files
+*.designer.cs.backup
+
+# Ignore any temporary generated files
+*.g.cs.backup
+*.g.i.cs.backup
+*.g.vb.backup
+
+# Ignore any temporary compiled files
+*.compiled.backup
+
+# Ignore any temporary Razor files
+*.razor.cs.backup
+
+# Ignore any temporary minified files
+*.min.js.backup
+*.min.css.backup
+
+# Ignore any temporary map files
+*.js.map.backup
+*.css.map.backup
+
+# Ignore any temporary JSON backup files
+*.json.backup.backup
+
+# Ignore any temporary XML backup files
+*.xml.backup.backup
+
+# Ignore any temporary HTML backup files
+*.html.backup.backup
+
+# Ignore any temporary text backup files
+*.txt.backup.backup
+
+# Ignore any temporary markdown backup files
+*.md.backup.backup
+
+# Ignore any temporary PDF backup files
+*.pdf.backup.backup
+
+# Ignore any temporary image backup files
+*.png.backup.backup
+*.jpg.backup.backup
+*.jpeg.backup.backup
+*.gif.backup.backup
+*.bmp.backup.backup
+
+# Ignore any temporary video backup files
+*.mp4.backup.backup
+*.avi.backup.backup
+*.mkv.backup.backup
+
+# Ignore any temporary audio backup files
+*.mp3.backup.backup
+*.wav.backup.backup
+*.ogg.backup.backup
+
+# Ignore any temporary font backup files
+*.ttf.backup.backup
+*.otf.backup.backup
+
+# Ignore any temporary icon backup files
+*.ico.backup.backup
+
+# Ignore any temporary SVG backup files
+*.svg.backup.backup
+
+# Ignore any temporary CSV backup files
+*.csv.backup.backup
+
+# Ignore any temporary Excel backup files
+*.xls.backup.backup
+*.xlsx.backup.backup
+
+# Ignore any temporary PowerPoint backup files
+*.ppt.backup.backup
+*.pptx.backup.backup
+
+# Ignore any temporary Word backup files
+*.doc.backup.backup
+*.docx.backup.backup
+
+# Ignore any temporary archive backup files
+*.rar.backup.backup
+*.7z.backup.backup
+
+# Ignore any temporary log backup files
+*.log.backup.backup
+
+# Ignore any temporary configuration backup files
+*.config.backup.backup
+
+# Ignore any temporary settings backup files
+*.settings.backup.backup
+
+# Ignore any temporary resource backup files
+*.resx.backup.backup
+
+# Ignore any temporary design backup files
+*.designer.cs.backup.backup
+
+# Ignore any temporary generated backup files
+*.g.cs.backup.backup
+*.g.i.cs.backup.backup
+*.g.vb.backup.backup
+
+# Ignore any temporary compiled backup files
+*.compiled.backup.backup
+
+# Ignore any temporary Razor backup files
+*.razor.cs.backup.backup
+
+# Ignore any temporary minified backup files
+*.min.js.backup.backup
+*.min.css.backup.backup
+
+# Ignore any temporary map backup files
+*.js.map.backup.backup
+*.css.map.backup.backup
+.gitnexus
