@@ -921,11 +921,39 @@ const INDEX_HTML: &str = r#"<!doctype html>
       return filtered.length ? filtered : ['dense'];
     }
 
-    function renderModelOptions(selectedValue = '') {
+    function endpointCapability(endpoint) {
+      if (endpoint.id === 'openai_embeddings' || endpoint.id === 'ollama_embeddings') return 'embedding';
+      if (endpoint.id === 'sparse_embeddings') return 'sparse_embedding';
+      if (endpoint.id === 'colbert_embeddings') return 'colbert_embedding';
+      if (endpoint.id === 'rerank') return 'rerank';
+      if (endpoint.id === 'token_count') return 'token_count';
+      return null;
+    }
+
+    function modelsForEndpoint(endpoint = selectedEndpoint()) {
+      const capability = endpointCapability(endpoint);
+      if (!capability) return state.models;
+      return state.models.filter((model) => listCapabilities(model).includes(capability));
+    }
+
+    function selectedModelForEndpoint(endpoint = selectedEndpoint()) {
+      const selected = selectedModel();
+      const models = modelsForEndpoint(endpoint);
+      if (selected && models.some((model) => modelId(model) === selected)) {
+        return selected;
+      }
+      return models[0] ? modelId(models[0]) : '';
+    }
+
+    function renderModelOptions(selectedValue = '', endpoint = selectedEndpoint()) {
+      const models = modelsForEndpoint(endpoint);
       if (!state.models.length) {
         return '<option value="">Chưa có model</option>';
       }
-      return state.models
+      if (!models.length) {
+        return '<option value="">Không có model phù hợp</option>';
+      }
+      return models
         .map((model) => {
           const id = modelId(model);
           const selected = id === selectedValue ? ' selected' : '';
@@ -947,19 +975,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
         </div>`;
     }
 
-    function modelSelectField(selectedValue) {
+    function modelSelectField(selectedValue, endpoint) {
       return `
         <div class="field">
           <label for="modelSelect">Chọn Model</label>
-          <select id="modelSelect">${renderModelOptions(selectedValue)}</select>
+          <select id="modelSelect">${renderModelOptions(selectedValue, endpoint)}</select>
         </div>`;
     }
 
     function renderEmbeddingForm(title) {
-      const selectedValue = selectedModel() || (state.models[0] ? modelId(state.models[0]) : '');
+      const endpoint = selectedEndpoint();
+      const selectedValue = selectedModelForEndpoint(endpoint);
       els.formMode.innerHTML = formShell(
         title,
-        `${modelSelectField(selectedValue)}
+        `${modelSelectField(selectedValue, endpoint)}
          <div class="field">
            <label for="inputText">Văn bản cần Embed</label>
            <textarea id="inputText" placeholder="Nhập nội dung cần xử lý..."></textarea>
@@ -969,10 +998,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     function renderOllamaForm() {
-      const selectedValue = selectedModel() || (state.models[0] ? modelId(state.models[0]) : '');
+      const endpoint = selectedEndpoint();
+      const selectedValue = selectedModelForEndpoint(endpoint);
       els.formMode.innerHTML = formShell(
         'Ollama Embeddings',
-        `${modelSelectField(selectedValue)}
+        `${modelSelectField(selectedValue, endpoint)}
          <div class="field">
            <label for="promptInput">Prompt</label>
            <textarea id="promptInput" placeholder="Nhập prompt..."></textarea>
@@ -992,10 +1022,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     function renderRerankForm() {
-      const selectedValue = selectedModel() || (state.models[0] ? modelId(state.models[0]) : '');
+      const endpoint = selectedEndpoint();
+      const selectedValue = selectedModelForEndpoint(endpoint);
       els.formMode.innerHTML = formShell(
         'Rerank',
-        `${modelSelectField(selectedValue)}
+        `${modelSelectField(selectedValue, endpoint)}
          <div class="field">
            <label for="queryInput">Query</label>
            <input id="queryInput" type="text" placeholder="Câu truy vấn..." />
@@ -1044,7 +1075,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     function buildEndpointJson(endpoint) {
       const template = endpoint.jsonTemplate ? endpoint.jsonTemplate() : {};
       if (endpoint.defaultModel) {
-        template.model = selectedModel() || '';
+        template.model = selectedModelForEndpoint(endpoint);
       }
       return JSON.stringify(template, null, 2);
     }
@@ -1181,9 +1212,22 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
     function syncModelSelection() {
       const modelSelect = els.formMode.querySelector('#modelSelect');
-      if (modelSelect && state.models.length && !modelSelect.value) {
-        modelSelect.value = modelId(state.models[0]);
+      if (!modelSelect || !state.models.length) {
+        return;
       }
+
+      const endpoint = selectedEndpoint();
+      const models = modelsForEndpoint(endpoint);
+      if (!models.length) {
+        modelSelect.value = '';
+        return;
+      }
+
+      if (modelSelect.value && models.some((model) => modelId(model) === modelSelect.value)) {
+        return;
+      }
+
+      modelSelect.value = selectedModelForEndpoint(endpoint);
     }
 
     function buildRequestBody() {
@@ -1195,7 +1239,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const body = {};
 
       if (endpoint.defaultModel) {
-        const model = selectedModel();
+        const model = selectedModelForEndpoint(endpoint);
         if (!model) {
           throw new Error('Không có model nào để test');
         }
@@ -1324,6 +1368,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           const modelSelect = els.formMode.querySelector('#modelSelect');
           if (modelSelect) {
             modelSelect.value = id;
+            syncModelSelection();
           }
           syncSelectedModelCard();
           syncRawJsonTemplate();

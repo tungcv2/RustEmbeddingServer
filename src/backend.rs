@@ -2,10 +2,17 @@ use crate::{
     error::{AppError, AppResult},
     models::ModelMetadata,
 };
+use ort::{
+    memory::Allocator,
+    session::{builder::GraphOptimizationLevel, Session},
+    value::{DynValue, Tensor},
+};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
-use std::{path::Path, process::Command};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokenizers::Tokenizer;
 use tokio::task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +27,15 @@ pub struct LoadedModel {
     pub model_name: String,
     pub dimensions: usize,
 }
+
+#[derive(Debug)]
+struct RustModelRuntime {
+    tokenizer: Arc<Tokenizer>,
+    session: Mutex<Session>,
+    input_names: Vec<String>,
+}
+
+static RUST_RUNTIME_CACHE: OnceLock<Mutex<HashMap<String, Arc<RustModelRuntime>>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct BackendManager {
@@ -72,78 +88,6 @@ pub fn deterministic_embedding(input: &str, dimensions: usize) -> Vec<f32> {
     }
     output
 }
-
-#[derive(Debug, Deserialize)]
-struct PythonEmbeddingResponse {
-    embeddings: Vec<Vec<f32>>,
-}
-
-const PYTHON_EMBEDDING_SCRIPT: &str = r#"
-import json
-import os
-
-payload = json.loads(os.environ['EMBEDDING_REQUEST_JSON'])
-model_path = payload['model_path']
-model_file = payload.get('model_file')
-texts = payload['texts']
-max_tokens = int(payload['max_tokens'])
-
-def pick_onnx_file(path, preferred_file):
-    if preferred_file:
-        candidate = os.path.join(path, preferred_file)
-        if os.path.exists(candidate):
-            return candidate
-
-    for root, _dirs, files in os.walk(path):
-        for file_name in files:
-            if file_name.endswith('.onnx'):
-                return os.path.join(root, file_name)
-    return None
-
-onnx_file = pick_onnx_file(model_path, model_file)
-if onnx_file is None:
-    raise RuntimeError(f'no ONNX file found in {model_path}')
-
-from transformers import AutoTokenizer
-import numpy as np
-import onnxruntime as ort
-
-tokenizer = AutoTokenizer.from_pretrained(
-    model_path,
-    trust_remote_code=True,
-    local_files_only=True,
-)
-
-session = ort.InferenceSession(onnx_file, providers=['CPUExecutionProvider'])
-batch = tokenizer(
-    texts,
-    padding=True,
-    truncation=True,
-    max_length=max_tokens,
-    return_tensors='np',
-)
-
-session_inputs = {}
-for input_info in session.get_inputs():
-    if input_info.name in batch:
-        session_inputs[input_info.name] = batch[input_info.name]
-    elif input_info.name == 'token_type_ids':
-        session_inputs[input_info.name] = np.zeros_like(batch['input_ids'])
-
-outputs = session.run(None, session_inputs)
-embeddings = np.asarray(outputs[0])
-if embeddings.ndim == 3:
-    attention_mask = batch['attention_mask'][..., None].astype(np.float32)
-    pooled = (embeddings * attention_mask).sum(axis=1) / np.clip(attention_mask.sum(axis=1), 1e-9, None)
-    embeddings = pooled
-elif embeddings.ndim != 2:
-    raise RuntimeError(f'unexpected ONNX output shape: {embeddings.shape}')
-
-embeddings = embeddings.tolist()
-
-print(json.dumps({'embeddings': embeddings}, ensure_ascii=False))
-"#;
-
 pub async fn embed_texts(
     model_path: &Path,
     model_file: &str,
@@ -161,75 +105,467 @@ pub async fn embed_texts(
     let model_path = model_path.to_path_buf();
     let model_file = model_file.to_string();
     let texts = texts.to_vec();
-    task::spawn_blocking(move || run_python_embedding(&model_path, &model_file, &texts, max_tokens))
+    task::spawn_blocking(move || {
+        let runtime = runtime_for_model(&model_path, &model_file)?;
+        infer_embeddings(&runtime, &texts, max_tokens)
+    })
         .await
         .map_err(|error| AppError::Internal(format!("embedding worker failed: {error}")))?
 }
 
-fn supports_real_embedding(model_path: &Path, model_file: &str) -> bool {
-    let has_manifest = ["config.json", "tokenizer_config.json"]
-        .iter()
-        .any(|name| model_path.join(name).exists());
-    let has_tokenizer = [
-        "tokenizer.json",
-        "tokenizer.model",
-        "vocab.txt",
-        "bpe.codes",
-    ]
-    .iter()
-    .any(|name| model_path.join(name).exists());
-    let has_model = model_path.join(model_file).exists() && model_file.ends_with(".onnx");
-
-    has_manifest && has_tokenizer && has_model
-}
-
-fn run_python_embedding(
+pub async fn rerank_documents(
     model_path: &Path,
     model_file: &str,
+    query: &str,
+    documents: &[String],
+    max_tokens: usize,
+) -> AppResult<Vec<f32>> {
+    if !supports_real_rerank(model_path, model_file) {
+        return Err(AppError::BadRequest(format!(
+            "model bundle at {} is not a valid reranker bundle",
+            model_path.display()
+        )));
+    }
+
+    let model_path = model_path.to_path_buf();
+    let model_file = model_file.to_string();
+    let query = query.to_string();
+    let documents = documents.to_vec();
+    task::spawn_blocking(move || {
+        let runtime = runtime_for_model(&model_path, &model_file)?;
+        infer_rerank_scores(&runtime, &query, &documents, max_tokens)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("reranking worker failed: {error}")))?
+}
+
+fn supports_real_embedding(model_path: &Path, model_file: &str) -> bool {
+    model_path.join("tokenizer.json").exists()
+        && model_path.join(model_file).exists()
+        && model_file.ends_with(".onnx")
+}
+
+fn supports_real_rerank(model_path: &Path, model_file: &str) -> bool {
+    model_path.join("tokenizer.json").exists()
+        && model_path.join(model_file).exists()
+        && model_file.ends_with(".onnx")
+}
+
+fn runtime_for_model(model_path: &Path, model_file: &str) -> AppResult<Arc<RustModelRuntime>> {
+    let cache_key = runtime_cache_key(model_path, model_file);
+
+    if let Some(runtime) = runtime_cache().lock().unwrap().get(&cache_key).cloned() {
+        return Ok(runtime);
+    }
+
+    let runtime = Arc::new(load_runtime(model_path, model_file)?);
+    let mut cache = runtime_cache().lock().unwrap();
+    Ok(cache.entry(cache_key).or_insert_with(|| Arc::clone(&runtime)).clone())
+}
+
+fn runtime_cache() -> &'static Mutex<HashMap<String, Arc<RustModelRuntime>>> {
+    RUST_RUNTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn runtime_cache_key(model_path: &Path, model_file: &str) -> String {
+    format!("{}::{}", model_path.display(), model_file)
+}
+
+fn load_runtime(model_path: &Path, model_file: &str) -> AppResult<RustModelRuntime> {
+    let tokenizer = Arc::new(load_tokenizer(model_path)?);
+    let model_file_path = model_path.join(model_file);
+    let builder = Session::builder()
+        .map_err(|error| AppError::Internal(format!("failed to create ONNX session builder: {error}")))?;
+    let builder = if model_file.contains("fp16") {
+        builder
+            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .map_err(|error| {
+                AppError::Internal(format!("failed to configure ONNX session builder: {error}"))
+            })?
+    } else {
+        builder
+    };
+    let session = builder
+        .commit_from_file(&model_file_path)
+        .map_err(|error| {
+            AppError::Internal(format!(
+                "failed to load ONNX model {}: {error}",
+                model_file_path.display()
+            ))
+        })?;
+
+    let input_names = session
+        .inputs()
+        .iter()
+        .map(|input| input.name().to_string())
+        .collect();
+
+    Ok(RustModelRuntime {
+        tokenizer,
+        session: Mutex::new(session),
+        input_names,
+    })
+}
+
+fn load_tokenizer(model_path: &Path) -> AppResult<Tokenizer> {
+    let tokenizer_path = model_path.join("tokenizer.json");
+    if !tokenizer_path.exists() {
+        return Err(AppError::BadRequest(format!(
+            "model bundle at {} does not include tokenizer.json",
+            model_path.display()
+        )));
+    }
+
+    Tokenizer::from_file(&tokenizer_path).map_err(|error| {
+        AppError::Internal(format!(
+            "failed to load tokenizer {}: {error}",
+            tokenizer_path.display()
+        ))
+    })
+}
+
+fn infer_embeddings(
+    runtime: &RustModelRuntime,
     texts: &[String],
     max_tokens: usize,
 ) -> AppResult<Vec<Vec<f32>>> {
-    let request = serde_json::json!({
-        "model_path": model_path.to_string_lossy(),
-        "model_file": model_file,
-        "texts": texts,
-        "max_tokens": max_tokens,
-    })
-    .to_string();
+    let batch = prepare_batch(&runtime.tokenizer, texts, max_tokens)?;
+    let inputs = build_inputs(&runtime.input_names, &batch)?;
+    let mut session = runtime.session.lock().unwrap();
+    let outputs = session
+        .run(inputs)
+        .map_err(|error| AppError::Internal(format!("embedding inference failed: {error}")))?;
 
-    let mut last_error = None;
-    for interpreter in ["python", "python3"] {
-        let output = Command::new(interpreter)
-            .arg("-c")
-            .arg(PYTHON_EMBEDDING_SCRIPT)
-            .env("EMBEDDING_REQUEST_JSON", &request)
-            .output();
+    let output = outputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("embedding model returned no outputs".to_string()))?;
+    let (shape, values) = output
+        .1
+        .try_extract_tensor::<f32>()
+        .map_err(|error| AppError::Internal(format!("failed to read embedding output tensor: {error}")))?;
+    let dims: Vec<usize> = shape.iter().map(|dim| *dim as usize).collect();
 
-        match output {
-            Ok(output) if output.status.success() => {
-                let parsed: PythonEmbeddingResponse = serde_json::from_slice(&output.stdout)?;
-                if parsed.embeddings.len() != texts.len() {
-                    return Err(AppError::Internal(format!(
-                        "embedding model returned {} vectors for {} inputs",
-                        parsed.embeddings.len(),
-                        texts.len()
-                    )));
-                }
-                return Ok(parsed.embeddings);
+    match dims.as_slice() {
+        [batch_size, hidden_size] => {
+            if *batch_size != batch.batch_size {
+                return Err(AppError::Internal(format!(
+                    "embedding model returned {} rows for {} inputs",
+                    batch_size,
+                    batch.batch_size
+                )));
             }
-            Ok(output) => {
-                last_error = Some(String::from_utf8_lossy(&output.stderr).trim().to_string());
-            }
-            Err(error) => {
-                last_error = Some(error.to_string());
-            }
+            Ok(values.chunks(*hidden_size).map(|row| row.to_vec()).collect())
         }
+        [batch_size, seq_len, hidden_size] => {
+            if *batch_size != batch.batch_size {
+                return Err(AppError::Internal(format!(
+                    "embedding model returned {} rows for {} inputs",
+                    batch_size,
+                    batch.batch_size
+                )));
+            }
+            Ok(pool_embeddings(values, *batch_size, *seq_len, *hidden_size, &batch.attention_mask))
+        }
+        _ => Err(AppError::Internal(format!("unexpected embedding output shape: {:?}", dims))),
+    }
+}
+
+fn infer_rerank_scores(
+    runtime: &RustModelRuntime,
+    query: &str,
+    documents: &[String],
+    max_tokens: usize,
+) -> AppResult<Vec<f32>> {
+    let batch = prepare_pair_batch(&runtime.tokenizer, query, documents, max_tokens)?;
+    let inputs = build_inputs(&runtime.input_names, &batch)?;
+    let mut session = runtime.session.lock().unwrap();
+    let outputs = session
+        .run(inputs)
+        .map_err(|error| AppError::Internal(format!("reranking inference failed: {error}")))?;
+
+    let output = outputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("reranking model returned no outputs".to_string()))?;
+    let (shape, values) = output
+        .1
+        .try_extract_tensor::<f32>()
+        .map_err(|error| AppError::Internal(format!("failed to read rerank output tensor: {error}")))?;
+    let dims: Vec<usize> = shape.iter().map(|dim| *dim as usize).collect();
+
+    match dims.as_slice() {
+        [batch_size] => {
+            if *batch_size != documents.len() {
+                return Err(AppError::Internal(format!(
+                    "reranking model returned {} scores for {} documents",
+                    batch_size,
+                    documents.len()
+                )));
+            }
+            Ok(values.to_vec())
+        }
+        [batch_size, 1] => {
+            if *batch_size != documents.len() {
+                return Err(AppError::Internal(format!(
+                    "reranking model returned {} scores for {} documents",
+                    batch_size,
+                    documents.len()
+                )));
+            }
+            Ok(values.chunks(1).map(|row| row[0]).collect())
+        }
+        [batch_size, classes] if *batch_size == documents.len() => {
+            let mut scores = Vec::with_capacity(*batch_size);
+            for row in values.chunks(*classes) {
+                let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut denom = 0.0f32;
+                let mut last_prob = 0.0f32;
+                for (index, value) in row.iter().copied().enumerate() {
+                    let exp = (value - max).exp();
+                    denom += exp;
+                    if index + 1 == *classes {
+                        last_prob = exp;
+                    }
+                }
+                scores.push(last_prob / denom.max(1e-9));
+            }
+            Ok(scores)
+        }
+        _ => Err(AppError::Internal(format!("unexpected reranking output shape: {:?}", dims))),
+    }
+}
+
+struct PreparedBatch {
+    input_ids: Vec<i64>,
+    attention_mask: Vec<i64>,
+    token_type_ids: Vec<i64>,
+    position_ids: Vec<i64>,
+    batch_size: usize,
+    seq_len: usize,
+}
+
+fn prepare_batch(tokenizer: &Tokenizer, texts: &[String], max_tokens: usize) -> AppResult<PreparedBatch> {
+    if texts.is_empty() {
+        return Err(AppError::BadRequest("input must not be empty".to_string()));
     }
 
-    Err(AppError::Internal(format!(
-        "real embedding inference failed: {}",
-        last_error.unwrap_or_else(|| "no Python interpreter found".to_string())
-    )))
+    let mut encodings = Vec::with_capacity(texts.len());
+    let mut seq_len = 0usize;
+
+    for text in texts {
+        let encoding = tokenizer
+            .encode(text.as_str(), true)
+            .map_err(|error| AppError::BadRequest(format!("failed to tokenize input: {error}")))?;
+        seq_len = seq_len.max(encoding.get_ids().len().min(max_tokens.max(1)));
+        encodings.push(encoding);
+    }
+
+    let mut input_ids = Vec::with_capacity(texts.len() * seq_len);
+    let mut attention_mask = Vec::with_capacity(texts.len() * seq_len);
+    let mut token_type_ids = Vec::with_capacity(texts.len() * seq_len);
+    let mut position_ids = Vec::with_capacity(texts.len() * seq_len);
+    let pad_id = tokenizer
+        .get_padding()
+        .map(|padding| padding.pad_id as i64)
+        .or_else(|| tokenizer.token_to_id("<pad>").map(|id| id as i64))
+        .or_else(|| tokenizer.token_to_id("[PAD]").map(|id| id as i64))
+        .unwrap_or(0);
+
+    for encoding in encodings {
+        let mut ids: Vec<i64> = encoding
+            .get_ids()
+            .iter()
+            .take(max_tokens.max(1))
+            .map(|id| *id as i64)
+            .collect();
+        let mut mask: Vec<i64> = vec![1; ids.len()];
+        let mut type_ids: Vec<i64> = encoding
+            .get_type_ids()
+            .iter()
+            .take(ids.len())
+            .map(|id| *id as i64)
+            .collect();
+
+        ids.resize(seq_len, pad_id);
+        mask.resize(seq_len, 0);
+        type_ids.resize(seq_len, 0);
+
+        input_ids.extend(ids);
+        attention_mask.extend(mask);
+        token_type_ids.extend(type_ids);
+        position_ids.extend((0..seq_len).map(|position| position as i64));
+    }
+
+    Ok(PreparedBatch {
+        input_ids,
+        attention_mask,
+        token_type_ids,
+        position_ids,
+        batch_size: texts.len(),
+        seq_len,
+    })
+}
+
+fn prepare_pair_batch(
+    tokenizer: &Tokenizer,
+    query: &str,
+    documents: &[String],
+    max_tokens: usize,
+) -> AppResult<PreparedBatch> {
+    if documents.is_empty() {
+        return Err(AppError::BadRequest("documents must not be empty".to_string()));
+    }
+
+    let mut encodings = Vec::with_capacity(documents.len());
+    let mut seq_len = 0usize;
+
+    for document in documents {
+        let encoding = tokenizer
+            .encode((query, document.as_str()), true)
+            .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank input: {error}")))?;
+        seq_len = seq_len.max(encoding.get_ids().len().min(max_tokens.max(1)));
+        encodings.push(encoding);
+    }
+
+    let mut input_ids = Vec::with_capacity(documents.len() * seq_len);
+    let mut attention_mask = Vec::with_capacity(documents.len() * seq_len);
+    let mut token_type_ids = Vec::with_capacity(documents.len() * seq_len);
+    let mut position_ids = Vec::with_capacity(documents.len() * seq_len);
+    let pad_id = tokenizer
+        .get_padding()
+        .map(|padding| padding.pad_id as i64)
+        .or_else(|| tokenizer.token_to_id("<pad>").map(|id| id as i64))
+        .or_else(|| tokenizer.token_to_id("[PAD]").map(|id| id as i64))
+        .unwrap_or(0);
+
+    for encoding in encodings {
+        let mut ids: Vec<i64> = encoding
+            .get_ids()
+            .iter()
+            .take(max_tokens.max(1))
+            .map(|id| *id as i64)
+            .collect();
+        let mut mask: Vec<i64> = vec![1; ids.len()];
+        let mut type_ids: Vec<i64> = encoding
+            .get_type_ids()
+            .iter()
+            .take(ids.len())
+            .map(|id| *id as i64)
+            .collect();
+
+        ids.resize(seq_len, pad_id);
+        mask.resize(seq_len, 0);
+        type_ids.resize(seq_len, 0);
+
+        input_ids.extend(ids);
+        attention_mask.extend(mask);
+        token_type_ids.extend(type_ids);
+        position_ids.extend((0..seq_len).map(|position| position as i64));
+    }
+
+    Ok(PreparedBatch {
+        input_ids,
+        attention_mask,
+        token_type_ids,
+        position_ids,
+        batch_size: documents.len(),
+        seq_len,
+    })
+}
+
+fn build_inputs(input_names: &[String], batch: &PreparedBatch) -> AppResult<HashMap<String, DynValue>> {
+    let mut inputs = HashMap::new();
+
+    for name in input_names {
+        let key = normalize_input_name(name);
+        let tensor: DynValue = match key.as_str() {
+            "input_ids" => Tensor::from_array((
+                vec![batch.batch_size, batch.seq_len],
+                batch.input_ids.clone().into_boxed_slice(),
+            ))
+            .map(Into::into)
+            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            "attention_mask" => Tensor::from_array((
+                vec![batch.batch_size, batch.seq_len],
+                batch.attention_mask.clone().into_boxed_slice(),
+            ))
+            .map(Into::into)
+            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            "token_type_ids" | "segment_ids" => Tensor::from_array((
+                vec![batch.batch_size, batch.seq_len],
+                batch.token_type_ids.clone().into_boxed_slice(),
+            ))
+            .map(Into::into)
+            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            "position_ids" => Tensor::from_array((
+                vec![batch.batch_size, batch.seq_len],
+                batch.position_ids.clone().into_boxed_slice(),
+            ))
+            .map(Into::into)
+            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            _ if key.starts_with("past_key_values.")
+                && (key.ends_with(".key") || key.ends_with(".value")) =>
+            Tensor::<f32>::new(&Allocator::default(), [batch.batch_size, 8, 0, 128])
+            .map(Into::into)
+            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            _ => {
+                return Err(AppError::Internal(format!("unsupported ONNX input name: {name}")));
+            }
+        };
+
+        inputs.insert(name.clone(), tensor);
+    }
+
+    Ok(inputs)
+}
+
+fn normalize_input_name(name: &str) -> String {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("input_ids") || lowered == "input" {
+        "input_ids".to_string()
+    } else if lowered.contains("attention_mask") || lowered.contains("mask") {
+        "attention_mask".to_string()
+    } else if lowered.contains("token_type") || lowered.contains("segment") {
+        "token_type_ids".to_string()
+    } else if lowered.contains("position") {
+        "position_ids".to_string()
+    } else {
+        lowered
+    }
+}
+
+fn pool_embeddings(
+    values: &[f32],
+    batch_size: usize,
+    seq_len: usize,
+    hidden_size: usize,
+    attention_mask: &[i64],
+) -> Vec<Vec<f32>> {
+    let mut pooled = Vec::with_capacity(batch_size);
+    for batch_index in 0..batch_size {
+        let mut row = vec![0.0f32; hidden_size];
+        let mut weight_sum = 0.0f32;
+        for token_index in 0..seq_len {
+            let weight = attention_mask[batch_index * seq_len + token_index] as f32;
+            if weight == 0.0 {
+                continue;
+            }
+            weight_sum += weight;
+            let base = batch_index * seq_len * hidden_size + token_index * hidden_size;
+            for hidden_index in 0..hidden_size {
+                row[hidden_index] += values[base + hidden_index] * weight;
+            }
+        }
+
+        let denom = weight_sum.max(1e-9);
+        for value in &mut row {
+            *value /= denom;
+        }
+        pooled.push(row);
+    }
+
+    pooled
 }
 
 pub fn token_count(text: &str) -> usize {

@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use embedding_api_server::{config::AppConfig, registry::ModelRegistry, routes};
+use embedding_api_server::{config::AppConfig, error::AppError, registry::ModelRegistry, routes};
 use http_body_util::BodyExt;
 use std::{
     fs,
@@ -35,7 +35,7 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn write_model(dir: &PathBuf, name: &str, default_file: &str) {
+fn write_model_with_types(dir: &PathBuf, name: &str, default_file: &str, supported_types: &[&str]) {
     let model_dir = dir.join(name);
     fs::create_dir_all(&model_dir).unwrap();
     fs::write(model_dir.join(default_file), b"test").unwrap();
@@ -48,7 +48,7 @@ fn write_model(dir: &PathBuf, name: &str, default_file: &str) {
             "task": "embedding",
             "dimensions": 8,
             "max_tokens": 16,
-            "supported_types": ["embedding", "token_count"],
+            "supported_types": supported_types,
             "default_model_file": default_file,
             "files": [default_file],
             "tokenizer_class": "TestTokenizer",
@@ -58,6 +58,10 @@ fn write_model(dir: &PathBuf, name: &str, default_file: &str) {
         .to_string(),
     )
     .unwrap();
+}
+
+fn write_model(dir: &PathBuf, name: &str, default_file: &str) {
+    write_model_with_types(dir, name, default_file, &["embedding", "token_count"])
 }
 
 #[tokio::test]
@@ -167,4 +171,61 @@ async fn gpu_falls_back_to_cpu_when_unavailable() {
 
     std::env::remove_var("USE_GPU");
     std::env::remove_var("GPU_AVAILABLE");
+}
+
+#[tokio::test]
+async fn token_count_prefers_default_model() {
+    let models_dir = temp_models_dir();
+    write_model(&models_dir, "model-a", "model.onnx");
+    write_model(&models_dir, "model-b", "model.onnx");
+
+    let config = AppConfig {
+        models_dir: models_dir.clone(),
+        default_model: Some("model-b".to_string()),
+        model_ttl: Duration::from_secs(7200),
+        bind_addr: "127.0.0.1:8000".parse().unwrap(),
+    };
+    let registry = ModelRegistry::discover(&config).await.unwrap();
+
+    let response = registry
+        .token_count(embedding_api_server::models::TokenCountRequest {
+            text: "xin chao".to_string(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.model, "model-b");
+    assert_eq!(response.count, 2);
+}
+
+#[tokio::test]
+async fn embedding_requests_reject_incompatible_models() {
+    let models_dir = temp_models_dir();
+    write_model_with_types(
+        &models_dir,
+        "model-rerank",
+        "model.onnx",
+        &["rerank", "token_count"],
+    );
+
+    let config = AppConfig {
+        models_dir: models_dir.clone(),
+        default_model: Some("model-rerank".to_string()),
+        model_ttl: Duration::from_secs(7200),
+        bind_addr: "127.0.0.1:8000".parse().unwrap(),
+    };
+    let registry = ModelRegistry::discover(&config).await.unwrap();
+
+    let error = registry
+        .openai_embedding(embedding_api_server::models::OpenAIEmbeddingRequest {
+            model: "model-rerank".to_string(),
+            input: serde_json::Value::String("xin chao".to_string()),
+            user: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::BadRequest(message) if message.contains("does not support embedding"))
+    );
 }

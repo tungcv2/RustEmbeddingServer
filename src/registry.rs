@@ -95,23 +95,16 @@ impl ModelRegistry {
                 }
                 let metadata = parse_metadata(&metadata_path)?;
                 let model_key = metadata.name.clone();
-                let default_model_path = model_dir.join(&metadata.default_model_file);
+                let load_error = validate_model_bundle(&model_dir, &metadata);
                 next.insert(
                     model_key,
                     Arc::new(ModelEntry {
                         model_path: model_dir,
                         runtime: Mutex::new(ModelRuntime {
-                            available: default_model_path.exists(),
+                            available: load_error.is_none(),
                             loaded: None,
                             last_used: None,
-                            load_error: if default_model_path.exists() {
-                                None
-                            } else {
-                                Some(format!(
-                                    "missing default model file: {}",
-                                    metadata.default_model_file
-                                ))
-                            },
+                            load_error,
                         }),
                         metadata,
                     }),
@@ -245,8 +238,49 @@ impl ModelRegistry {
             .ok_or_else(|| AppError::ModelNotFound(model_name.to_string()))
     }
 
-    async fn metadata_for(&self, model_name: &str) -> AppResult<ModelMetadata> {
-        Ok(self.model_entry(model_name).await?.metadata.clone())
+    async fn entry_for_capability(
+        &self,
+        model_name: &str,
+        capability: &str,
+    ) -> AppResult<Arc<ModelEntry>> {
+        let entry = self.model_entry(model_name).await?;
+        if !entry.metadata.supports(capability) {
+            return Err(AppError::BadRequest(format!(
+                "model {model_name} does not support {capability}"
+            )));
+        }
+        Ok(entry)
+    }
+
+    async fn preferred_model_for_capability(&self, capability: &str) -> AppResult<String> {
+        let entries: Vec<Arc<ModelEntry>> = {
+            let models = self.models.read().await;
+            models.values().cloned().collect()
+        };
+
+        if let Some(default_model) = self.default_model_name() {
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.metadata.name == default_model)
+            {
+                let runtime = entry.runtime.lock().await;
+                if runtime.available && entry.metadata.supports(capability) {
+                    return Ok(default_model);
+                }
+            }
+        }
+
+        let mut candidates: Vec<String> = Vec::new();
+        for entry in entries {
+            let runtime = entry.runtime.lock().await;
+            if runtime.available && entry.metadata.supports(capability) {
+                candidates.push(entry.metadata.name.clone());
+            }
+        }
+        candidates.sort();
+        candidates.into_iter().next().ok_or_else(|| {
+            AppError::BadRequest(format!("no available model supports {capability}"))
+        })
     }
 
     fn default_model_name(&self) -> Option<String> {
@@ -257,7 +291,9 @@ impl ModelRegistry {
         &self,
         request: OpenAIEmbeddingRequest,
     ) -> AppResult<OpenAIEmbeddingResponse> {
-        let entry = self.model_entry(&request.model).await?;
+        let entry = self
+            .entry_for_capability(&request.model, "embedding")
+            .await?;
         let model_path = entry.model_path.clone();
         let metadata = entry.metadata.clone();
         self.ensure_loaded(&request.model).await?;
@@ -297,7 +333,9 @@ impl ModelRegistry {
         &self,
         request: OllamaEmbeddingRequest,
     ) -> AppResult<OllamaEmbeddingResponse> {
-        let entry = self.model_entry(&request.model).await?;
+        let entry = self
+            .entry_for_capability(&request.model, "embedding")
+            .await?;
         let model_path = entry.model_path.clone();
         let metadata = entry.metadata.clone();
         self.ensure_loaded(&request.model).await?;
@@ -315,16 +353,7 @@ impl ModelRegistry {
     }
 
     pub async fn token_count(&self, request: TokenCountRequest) -> AppResult<TokenCountResponse> {
-        let model = if let Some(default_model) = self.default_model_name() {
-            default_model
-        } else {
-            let models = self.models.read().await;
-            models
-                .keys()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| "default".to_string())
-        };
+        let model = self.preferred_model_for_capability("token_count").await?;
         Ok(TokenCountResponse {
             count: crate::backend::token_count(&request.text),
             model,
@@ -335,7 +364,10 @@ impl ModelRegistry {
         &self,
         request: SparseEmbeddingRequest,
     ) -> AppResult<SparseEmbeddingResponse> {
-        let metadata = self.metadata_for(&request.model).await?;
+        let entry = self
+            .entry_for_capability(&request.model, "sparse_embedding")
+            .await?;
+        let metadata = entry.metadata.clone();
         self.ensure_loaded(&request.model).await?;
         let inputs = parse_text_inputs(request.input)?;
         let mut data = Vec::with_capacity(inputs.len());
@@ -365,7 +397,10 @@ impl ModelRegistry {
         &self,
         request: ColBERTEmbeddingRequest,
     ) -> AppResult<ColBERTEmbeddingResponse> {
-        let metadata = self.metadata_for(&request.model).await?;
+        let entry = self
+            .entry_for_capability(&request.model, "colbert_embedding")
+            .await?;
+        let metadata = entry.metadata.clone();
         self.ensure_loaded(&request.model).await?;
         let inputs = parse_text_inputs(request.input)?;
         let mut data = Vec::with_capacity(inputs.len());
@@ -394,18 +429,31 @@ impl ModelRegistry {
     }
 
     pub async fn rerank(&self, request: RerankRequest) -> AppResult<RerankResponse> {
+        let entry = self.entry_for_capability(&request.model, "rerank").await?;
+        let model_path = entry.model_path.clone();
+        let metadata = entry.metadata.clone();
         self.ensure_loaded(&request.model).await?;
+
+        let scores = crate::backend::rerank_documents(
+            &model_path,
+            &metadata.default_model_file,
+            &request.query,
+            &request.documents,
+            metadata.max_tokens,
+        )
+        .await?;
+
+        let return_documents = request.return_documents.unwrap_or(true);
         let mut results: Vec<RerankResult> = request
             .documents
             .iter()
+            .cloned()
             .enumerate()
-            .map(|(index, document)| RerankResult {
+            .zip(scores)
+            .map(|((index, document), score)| RerankResult {
                 index,
-                document: request
-                    .return_documents
-                    .unwrap_or(true)
-                    .then(|| document.clone()),
-                score: rerank_score(&request.query, document),
+                document: return_documents.then_some(document),
+                score,
             })
             .collect();
         results.sort_by(|a, b| {
@@ -460,20 +508,31 @@ fn parse_text_inputs(value: Value) -> AppResult<Vec<String>> {
     }
 }
 
+fn validate_model_bundle(model_dir: &Path, metadata: &ModelMetadata) -> Option<String> {
+    let mut missing = Vec::new();
+
+    for file_name in &metadata.files {
+        if !model_dir.join(file_name).exists() {
+            missing.push(file_name.clone());
+        }
+    }
+
+    if !model_dir.join(&metadata.default_model_file).exists()
+        && !missing.contains(&metadata.default_model_file)
+    {
+        missing.push(metadata.default_model_file.clone());
+    }
+
+    if missing.is_empty() {
+        None
+    } else {
+        Some(format!("missing model files: {}", missing.join(", ")))
+    }
+}
+
 fn hash_to_unit_float(value: &str) -> f32 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.hash(&mut hasher);
     (hasher.finish() % 10_000) as f32 / 10_000.0
-}
-
-fn rerank_score(query: &str, document: &str) -> f32 {
-    let query_terms: Vec<&str> = query.split_whitespace().collect();
-    let document_terms: Vec<&str> = document.split_whitespace().collect();
-    let overlap = query_terms
-        .iter()
-        .filter(|term| document_terms.contains(term))
-        .count() as f32;
-    let length_penalty = document_terms.len().max(1) as f32;
-    overlap / length_penalty
 }
