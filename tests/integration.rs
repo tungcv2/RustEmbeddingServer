@@ -2,7 +2,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use embedding_api_server::{config::AppConfig, error::AppError, registry::ModelRegistry, routes};
+use embedding_api_server::{
+    backend::qwen3_rerank_prompt,
+    config::AppConfig,
+    error::AppError,
+    registry::ModelRegistry,
+    routes,
+};
 use http_body_util::BodyExt;
 use std::{
     fs,
@@ -196,6 +202,17 @@ async fn token_count_prefers_default_model() {
 
     assert_eq!(response.model, "model-b");
     assert_eq!(response.count, 2);
+}
+
+#[test]
+fn qwen3_rerank_prompt_uses_expected_format() {
+    let prompt = qwen3_rerank_prompt("what is rust", "a systems language");
+
+    assert!(prompt.contains("<Instruct>: Given a web search query, retrieve relevant passages that answer the query"));
+    assert!(prompt.contains("<Query>: what is rust"));
+    assert!(prompt.contains("<Document>: a systems language"));
+    assert!(!prompt.contains("<|im_start|>system"));
+    assert!(!prompt.contains("<|im_end|>\n<|im_start|>assistant"));
 }
 
 #[tokio::test]

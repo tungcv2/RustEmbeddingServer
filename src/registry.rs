@@ -435,6 +435,7 @@ impl ModelRegistry {
         self.ensure_loaded(&request.model).await?;
 
         let scores = crate::backend::rerank_documents(
+            &metadata,
             &model_path,
             &metadata.default_model_file,
             &request.query,

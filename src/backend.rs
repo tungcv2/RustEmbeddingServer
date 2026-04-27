@@ -2,6 +2,7 @@ use crate::{
     error::{AppError, AppResult},
     models::ModelMetadata,
 };
+use half::f16;
 use ort::{
     memory::Allocator,
     session::{builder::GraphOptimizationLevel, Session},
@@ -114,6 +115,7 @@ pub async fn embed_texts(
 }
 
 pub async fn rerank_documents(
+    metadata: &ModelMetadata,
     model_path: &Path,
     model_file: &str,
     query: &str,
@@ -131,9 +133,10 @@ pub async fn rerank_documents(
     let model_file = model_file.to_string();
     let query = query.to_string();
     let documents = documents.to_vec();
+    let metadata = metadata.clone();
     task::spawn_blocking(move || {
         let runtime = runtime_for_model(&model_path, &model_file)?;
-        infer_rerank_scores(&runtime, &query, &documents, max_tokens)
+        infer_rerank_scores(&runtime, &metadata, &query, &documents, max_tokens)
     })
     .await
     .map_err(|error| AppError::Internal(format!("reranking worker failed: {error}")))?
@@ -273,11 +276,12 @@ fn infer_embeddings(
 
 fn infer_rerank_scores(
     runtime: &RustModelRuntime,
+    metadata: &ModelMetadata,
     query: &str,
     documents: &[String],
     max_tokens: usize,
 ) -> AppResult<Vec<f32>> {
-    let batch = prepare_pair_batch(&runtime.tokenizer, query, documents, max_tokens)?;
+    let batch = prepare_pair_batch(&runtime.tokenizer, metadata, query, documents, max_tokens)?;
     let inputs = build_inputs(&runtime.input_names, &batch)?;
     let mut session = runtime.session.lock().unwrap();
     let outputs = session
@@ -288,11 +292,25 @@ fn infer_rerank_scores(
         .into_iter()
         .next()
         .ok_or_else(|| AppError::Internal("reranking model returned no outputs".to_string()))?;
-    let (shape, values) = output
-        .1
-        .try_extract_tensor::<f32>()
-        .map_err(|error| AppError::Internal(format!("failed to read rerank output tensor: {error}")))?;
+    let (shape, values): (_, Vec<f32>) = match output.1.try_extract_tensor::<f32>() {
+        Ok((shape, values)) => (shape, values.to_vec()),
+        Err(f32_error) => match output.1.try_extract_tensor::<f16>() {
+            Ok((shape, values)) => {
+                let values = values.iter().map(|value| value.to_f32()).collect();
+                (shape, values)
+            }
+            Err(f16_error) => {
+                return Err(AppError::Internal(format!(
+                    "failed to read rerank output tensor as f32 or f16: {f32_error}; {f16_error}"
+                )));
+            }
+        },
+    };
     let dims: Vec<usize> = shape.iter().map(|dim| *dim as usize).collect();
+
+    if is_qwen3_reranker(metadata) {
+        return extract_qwen3_rerank_scores(&runtime.tokenizer, &batch, &values, &dims);
+    }
 
     match dims.as_slice() {
         [batch_size] => {
@@ -334,6 +352,70 @@ fn infer_rerank_scores(
         }
         _ => Err(AppError::Internal(format!("unexpected reranking output shape: {:?}", dims))),
     }
+}
+
+fn is_qwen3_reranker(metadata: &ModelMetadata) -> bool {
+    metadata.family == "qwen3" && metadata.task == "rerank"
+}
+
+fn extract_qwen3_rerank_scores(
+    tokenizer: &Tokenizer,
+    batch: &PreparedBatch,
+    values: &[f32],
+    dims: &[usize],
+) -> AppResult<Vec<f32>> {
+    let [batch_size, seq_len, vocab_size] = dims else {
+        return Err(AppError::Internal(format!(
+            "unexpected qwen3 reranking output shape: {:?}",
+            dims
+        )));
+    };
+
+    if *batch_size != batch.batch_size {
+        return Err(AppError::Internal(format!(
+            "reranking model returned {} rows for {} documents",
+            batch_size, batch.batch_size
+        )));
+    }
+
+    let true_id = tokenizer
+        .token_to_id("yes")
+        .ok_or_else(|| AppError::Internal("qwen3 reranker tokenizer is missing token: yes".to_string()))?
+        as usize;
+    let false_id = tokenizer
+        .token_to_id("no")
+        .ok_or_else(|| AppError::Internal("qwen3 reranker tokenizer is missing token: no".to_string()))?
+        as usize;
+
+    if true_id >= *vocab_size || false_id >= *vocab_size {
+        return Err(AppError::Internal(format!(
+            "qwen3 reranker token ids exceed vocab size {}",
+            vocab_size
+        )));
+    }
+
+    let mut scores = Vec::with_capacity(*batch_size);
+    for batch_index in 0..*batch_size {
+        let row_offset = batch_index * batch.seq_len;
+        let last_token_index = batch.attention_mask[row_offset..row_offset + batch.seq_len]
+            .iter()
+            .rposition(|value| *value != 0)
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "qwen3 reranker received an empty sequence at index {}",
+                    batch_index
+                ))
+            })?;
+        let base = batch_index * seq_len * vocab_size + last_token_index * vocab_size;
+        let false_logits = values[base + false_id];
+        let true_logits = values[base + true_id];
+        let max_logit = false_logits.max(true_logits);
+        let false_exp = (false_logits - max_logit).exp();
+        let true_exp = (true_logits - max_logit).exp();
+        scores.push(true_exp / (false_exp + true_exp).max(1e-9));
+    }
+
+    Ok(scores)
 }
 
 struct PreparedBatch {
@@ -409,6 +491,7 @@ fn prepare_batch(tokenizer: &Tokenizer, texts: &[String], max_tokens: usize) -> 
 
 fn prepare_pair_batch(
     tokenizer: &Tokenizer,
+    metadata: &ModelMetadata,
     query: &str,
     documents: &[String],
     max_tokens: usize,
@@ -417,15 +500,37 @@ fn prepare_pair_batch(
         return Err(AppError::BadRequest("documents must not be empty".to_string()));
     }
 
-    let mut encodings = Vec::with_capacity(documents.len());
+    let mut batches = Vec::with_capacity(documents.len());
     let mut seq_len = 0usize;
+    let qwen3_reranker = is_qwen3_reranker(metadata);
 
     for document in documents {
-        let encoding = tokenizer
-            .encode((query, document.as_str()), true)
-            .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank input: {error}")))?;
-        seq_len = seq_len.max(encoding.get_ids().len().min(max_tokens.max(1)));
-        encodings.push(encoding);
+        let (ids, type_ids) = if qwen3_reranker {
+            let ids = qwen3_rerank_input_ids(tokenizer, query, document, max_tokens)?;
+            let type_ids = vec![0; ids.len()];
+            (ids, type_ids)
+        } else {
+            let encoding = tokenizer
+                .encode((query, document.as_str()), true)
+                .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank input: {error}")))?
+            ;
+            (
+                encoding
+                    .get_ids()
+                    .iter()
+                    .take(max_tokens.max(1))
+                    .map(|id| *id as i64)
+                    .collect(),
+                encoding
+                    .get_type_ids()
+                    .iter()
+                    .take(max_tokens.max(1))
+                    .map(|id| *id as i64)
+                    .collect(),
+            )
+        };
+        seq_len = seq_len.max(ids.len());
+        batches.push((ids, type_ids));
     }
 
     let mut input_ids = Vec::with_capacity(documents.len() * seq_len);
@@ -439,20 +544,8 @@ fn prepare_pair_batch(
         .or_else(|| tokenizer.token_to_id("[PAD]").map(|id| id as i64))
         .unwrap_or(0);
 
-    for encoding in encodings {
-        let mut ids: Vec<i64> = encoding
-            .get_ids()
-            .iter()
-            .take(max_tokens.max(1))
-            .map(|id| *id as i64)
-            .collect();
+    for (mut ids, mut type_ids) in batches {
         let mut mask: Vec<i64> = vec![1; ids.len()];
-        let mut type_ids: Vec<i64> = encoding
-            .get_type_ids()
-            .iter()
-            .take(ids.len())
-            .map(|id| *id as i64)
-            .collect();
 
         ids.resize(seq_len, pad_id);
         mask.resize(seq_len, 0);
@@ -472,6 +565,57 @@ fn prepare_pair_batch(
         batch_size: documents.len(),
         seq_len,
     })
+}
+
+pub fn qwen3_rerank_prompt(query: &str, document: &str) -> String {
+    format!(
+        "<Instruct>: {QWEN3_RERANK_INSTRUCTION}\n<Query>: {query}\n<Document>: {document}"
+    )
+}
+
+fn qwen3_rerank_input_ids(
+    tokenizer: &Tokenizer,
+    query: &str,
+    document: &str,
+    max_tokens: usize,
+) -> AppResult<Vec<i64>> {
+    let limit = max_tokens.max(1);
+    let prefix_ids = tokenizer
+        .encode(QWEN3_RERANK_PREFIX, false)
+        .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank prefix: {error}")))?
+        .get_ids()
+        .iter()
+        .map(|id| *id as i64)
+        .collect::<Vec<_>>();
+    let content_ids = tokenizer
+        .encode(qwen3_rerank_prompt(query, document).as_str(), false)
+        .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank input: {error}")))?
+        .get_ids()
+        .iter()
+        .map(|id| *id as i64)
+        .collect::<Vec<_>>();
+    let suffix_ids = qwen3_rerank_suffix_ids(tokenizer)?;
+
+    let mut ids = Vec::with_capacity(limit);
+    ids.extend(prefix_ids.into_iter().take(limit));
+
+    let suffix_keep = suffix_ids.len().min(limit.saturating_sub(ids.len()));
+    let content_keep = limit.saturating_sub(ids.len() + suffix_keep);
+    ids.extend(content_ids.into_iter().take(content_keep));
+    ids.extend(suffix_ids.into_iter().take(limit.saturating_sub(ids.len())));
+
+    Ok(ids)
+}
+
+const QWEN3_RERANK_PREFIX: &str = "<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be \"yes\" or \"no\".\n<|im_end|>\n<|im_start|>user\n";
+const QWEN3_RERANK_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+const QWEN3_RERANK_INSTRUCTION: &str = "Given a web search query, retrieve relevant passages that answer the query";
+
+fn qwen3_rerank_suffix_ids(tokenizer: &Tokenizer) -> AppResult<Vec<i64>> {
+    tokenizer
+        .encode(QWEN3_RERANK_SUFFIX, false)
+        .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank suffix: {error}")))
+        .map(|encoding| encoding.get_ids().iter().map(|id| *id as i64).collect())
 }
 
 fn build_inputs(input_names: &[String], batch: &PreparedBatch) -> AppResult<HashMap<String, DynValue>> {
@@ -570,4 +714,40 @@ fn pool_embeddings(
 
 pub fn token_count(text: &str) -> usize {
     text.split_whitespace().count().max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwen3_reranker_prompt_wraps_query_and_document() {
+        let prompt = qwen3_rerank_prompt("what is rust", "a systems language");
+
+        assert!(prompt.contains("<Instruct>: Given a web search query, retrieve relevant passages that answer the query"));
+        assert!(prompt.contains("<Query>: what is rust"));
+        assert!(prompt.contains("<Document>: a systems language"));
+        assert!(!prompt.contains("<|im_start|>system"));
+        assert!(!prompt.contains("<|im_end|>\n<|im_start|>assistant"));
+    }
+
+    #[test]
+    fn qwen3_reranker_detection_uses_family_and_task() {
+        let metadata = ModelMetadata {
+            name: "Qwen3-Reranker-0.6B-ONNX".to_string(),
+            directory: "Qwen3-Reranker-0.6B-ONNX".to_string(),
+            family: "qwen3".to_string(),
+            task: "rerank".to_string(),
+            dimensions: 1024,
+            max_tokens: 32000,
+            supported_types: vec!["rerank".to_string(), "token_count".to_string()],
+            default_model_file: "model.onnx".to_string(),
+            files: vec!["model.onnx".to_string()],
+            tokenizer_class: "Qwen2Tokenizer".to_string(),
+            source_model: "Qwen/Qwen3-Reranker-0.6B".to_string(),
+            notes: "test".to_string(),
+        };
+
+        assert!(is_qwen3_reranker(&metadata));
+    }
 }
