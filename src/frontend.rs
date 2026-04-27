@@ -334,6 +334,73 @@ const INDEX_HTML: &str = r#"<!doctype html>
       gap: 18px;
     }
 
+    .metrics-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .metrics-panel {
+      padding: 20px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .metrics-panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .metrics-panel-head h3 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.03em;
+    }
+
+    .metrics-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #111;
+    }
+
+    .metrics-table {
+      width: 100%;
+      min-width: 780px;
+      border-collapse: collapse;
+    }
+
+    .metrics-table th,
+    .metrics-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .metrics-table th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metrics-table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .metric-route {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .metric-meta {
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+
     .model-card {
       padding: 0;
       display: grid;
@@ -734,6 +801,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     @media (max-width: 1100px) {
       .models-wrap, .models-grid, .docs-grid, .docs-toolbar { grid-template-columns: 1fr; }
       .models-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .content { padding-inline: 20px; }
     }
 
@@ -744,6 +812,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
       .tester, .response, .page-head { width: 100%; }
       .models-head { grid-template-columns: 1fr; }
       .models-summary { grid-template-columns: 1fr; }
+      .metrics-summary { grid-template-columns: 1fr; }
+      .metrics-panel-head { display: grid; }
+      .metrics-table { min-width: 640px; }
     }
   </style>
 </head>
@@ -757,6 +828,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <nav class="nav" aria-label="Primary">
         <button class="active" data-view="embeddings">Embeddings</button>
         <button data-view="models">Models</button>
+        <button data-view="metrics">Metrics</button>
         <button data-view="docs">API Docs</button>
       </nav>
 
@@ -859,6 +931,84 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <div class="models-grid" id="modelGrid"></div>
         </section>
 
+        <section class="page" id="page-metrics">
+          <div class="page-head">
+            <h1>API Metrics</h1>
+            <p>Theo dõi số lần gọi, latency trung bình và 100 request gần nhất, chỉ lưu kết quả success/fail.</p>
+          </div>
+
+          <div class="metrics-summary">
+            <div class="summary-card">
+              <span class="label">Tổng request</span>
+              <strong class="value" id="metricsTotalCalls">0</strong>
+              <span class="hint">Tất cả API đang được track</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">Latency TB</span>
+              <strong class="value" id="metricsAvgMs">0.0</strong>
+              <span class="hint">Milliseconds trung bình</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">Tỉ lệ thành công</span>
+              <strong class="value" id="metricsSuccessRate">0%</strong>
+              <span class="hint">Success / tổng request</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">100 gần nhất</span>
+              <strong class="value" id="metricsRecentCount">0</strong>
+              <span class="hint" id="metricsUpdatedAt">Chưa tải dữ liệu</span>
+            </div>
+          </div>
+
+          <div class="card metrics-panel">
+            <div class="metrics-panel-head">
+              <div>
+                <div class="label">By API</div>
+                <h3>Thống kê theo endpoint</h3>
+              </div>
+              <div class="subtle">Tổng số route: <strong id="metricsRouteCount">0</strong></div>
+            </div>
+            <div class="metrics-table-wrap">
+              <table class="metrics-table">
+                <thead>
+                  <tr>
+                    <th>API</th>
+                    <th>Calls</th>
+                    <th>Avg ms</th>
+                    <th>Success</th>
+                    <th>Fail</th>
+                    <th>Last</th>
+                  </tr>
+                </thead>
+                <tbody id="metricsRoutesBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card metrics-panel">
+            <div class="metrics-panel-head">
+              <div>
+                <div class="label">Recent 100</div>
+                <h3>Kết quả gần nhất</h3>
+              </div>
+              <div class="subtle">Chỉ lưu status và thời gian xử lý</div>
+            </div>
+            <div class="metrics-table-wrap">
+              <table class="metrics-table">
+                <thead>
+                  <tr>
+                    <th>API</th>
+                    <th>Result</th>
+                    <th>Duration</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody id="metricsRecentBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <section class="page" id="page-docs">
           <div class="page-head">
             <h1>API Docs</h1>
@@ -952,6 +1102,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
       healthDot: document.getElementById('healthDot'),
       healthText: document.getElementById('healthText'),
       sidebarModelCount: document.getElementById('sidebarModelCount'),
+      metricsTotalCalls: document.getElementById('metricsTotalCalls'),
+      metricsAvgMs: document.getElementById('metricsAvgMs'),
+      metricsSuccessRate: document.getElementById('metricsSuccessRate'),
+      metricsRecentCount: document.getElementById('metricsRecentCount'),
+      metricsUpdatedAt: document.getElementById('metricsUpdatedAt'),
+      metricsRouteCount: document.getElementById('metricsRouteCount'),
+      metricsRoutesBody: document.getElementById('metricsRoutesBody'),
+      metricsRecentBody: document.getElementById('metricsRecentBody'),
     };
 
     const endpoints = [
@@ -1233,6 +1391,30 @@ const INDEX_HTML: &str = r#"<!doctype html>
   "models": []
 }`,
       },
+      {
+        id: 'api_metrics',
+        label: '/api/metrics',
+        method: 'GET',
+        summary: 'Thống kê realtime về số lần gọi, latency trung bình và 100 request gần nhất.',
+        inputSchema: [],
+        outputSchema: [
+          { name: 'totals', type: 'MetricsTotals', required: true, note: 'Tổng request, success, fail và latency trung bình.' },
+          { name: 'routes', type: 'MetricsRoute[]', required: true, note: 'Thống kê theo endpoint.' },
+          { name: 'recent', type: 'MetricsRecent[]', required: true, note: '100 request gần nhất.' },
+        ],
+        requestExample: `GET /api/metrics`,
+        responseExample: `{
+  "totals": {
+    "calls": 42,
+    "success": 40,
+    "failure": 2,
+    "average_ms": 12.4,
+    "tracked_routes": 6
+  },
+  "routes": [],
+  "recent": []
+}`,
+      },
     ];
 
     const state = {
@@ -1241,6 +1423,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       endpointId: 'openai_embeddings',
       docsEndpointId: 'openai_embeddings',
       requestMode: 'form',
+      metrics: { totals: {}, routes: [], recent: [] },
     };
 
     function escapeHtml(value) {
@@ -1495,6 +1678,66 @@ const INDEX_HTML: &str = r#"<!doctype html>
     function setStatus(message, kind = 'neutral') {
       els.healthText.textContent = message;
       els.healthDot.className = 'dot' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+    }
+
+    function formatMs(value) {
+      return `${Number(value || 0).toFixed(1)} ms`;
+    }
+
+    function formatTimestamp(ms) {
+      if (!ms) return '-';
+      return new Date(ms).toLocaleString();
+    }
+
+    function renderMetrics() {
+      const snapshot = state.metrics || {};
+      const totals = snapshot.totals || {};
+      const routes = Array.isArray(snapshot.routes) ? snapshot.routes : [];
+      const recent = Array.isArray(snapshot.recent) ? snapshot.recent : [];
+      const success = Number(totals.success || 0);
+      const calls = Number(totals.calls || 0);
+      const rate = calls ? Math.round((success / calls) * 1000) / 10 : 0;
+
+      els.metricsTotalCalls.textContent = String(calls);
+      els.metricsAvgMs.textContent = formatMs(totals.average_ms || 0);
+      els.metricsSuccessRate.textContent = `${rate.toFixed(1)}%`;
+      els.metricsRecentCount.textContent = String(recent.length);
+      els.metricsRouteCount.textContent = String(routes.length);
+      els.metricsUpdatedAt.textContent = `Cập nhật: ${new Date().toLocaleTimeString()}`;
+
+      els.metricsRoutesBody.innerHTML = routes.length
+        ? routes.map((item) => `
+          <tr>
+            <td class="metric-route">${escapeHtml(item.route)}</td>
+            <td>${escapeHtml(item.calls)}</td>
+            <td>${escapeHtml(formatMs(item.average_ms))}</td>
+            <td>${escapeHtml(item.success)}</td>
+            <td>${escapeHtml(item.failure)}</td>
+            <td><span class="tag ${Number(item.last_status || 0) < 400 ? 'loaded' : 'error'}">${escapeHtml(item.last_status || '-')}</span></td>
+          </tr>`).join('')
+        : '<tr><td colspan="6" class="subtle">Chưa có dữ liệu.</td></tr>';
+
+      els.metricsRecentBody.innerHTML = recent.length
+        ? recent.map((item) => `
+          <tr>
+            <td class="metric-route">${escapeHtml(item.route)}</td>
+            <td><span class="tag ${item.ok ? 'loaded' : 'error'}">${item.ok ? 'success' : 'fail'}</span></td>
+            <td>${escapeHtml(formatMs(item.duration_ms))}</td>
+            <td class="metric-meta">${escapeHtml(formatTimestamp(item.timestamp_ms))}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="4" class="subtle">Chưa có request nào.</td></tr>';
+    }
+
+    async function loadMetrics() {
+      const response = await fetch('/api/metrics');
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(JSON.stringify(data));
+      }
+
+      state.metrics = data;
+      renderMetrics();
     }
 
     function showJson(value) {
@@ -1816,6 +2059,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
       });
       document.querySelectorAll('.page').forEach((page) => page.classList.remove('active'));
       document.getElementById(`page-${view}`).classList.add('active');
+      if (view === 'metrics') {
+        loadMetrics().catch(handleError);
+      }
     }
 
     async function refreshModels() {
@@ -1914,6 +2160,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     renderDocsPicker();
     updateEndpointView();
     syncRawJsonTemplate();
+    renderMetrics();
     refreshModels()
       .then(checkHealth)
       .catch(handleError);

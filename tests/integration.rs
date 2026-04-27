@@ -121,8 +121,43 @@ async fn serves_embedded_frontend() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(html.contains("Embedding API Server Studio"));
+    assert!(html.contains("Metrics"));
     assert!(html.contains("/api/tokens/count"));
     assert!(html.contains("Raw JSON"));
+}
+
+#[tokio::test]
+async fn exposes_metrics_for_recent_requests() {
+    let models_dir = temp_models_dir();
+    write_model(&models_dir, "model-a", "model.onnx");
+
+    let config = AppConfig {
+        models_dir: models_dir.clone(),
+        default_model: Some("model-a".to_string()),
+        model_ttl: Duration::from_secs(7200),
+        bind_addr: "127.0.0.1:8000".parse().unwrap(),
+    };
+    let registry = ModelRegistry::discover(&config).await.unwrap();
+    let app = routes::router(registry, config);
+
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let metrics_response = app
+        .oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(metrics_response.status(), StatusCode::OK);
+    let body = metrics_response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["totals"]["calls"], 1);
+    assert_eq!(json["totals"]["success"], 1);
+    assert_eq!(json["recent"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -83,6 +83,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HTTPValidationError"
+  /api/metrics:
+    get:
+      summary: Api Metrics
+      operationId: api_metrics_api_metrics_get
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSnapshot"
   /api/embeddings/sparse:
     post:
       summary: Sparse Embeddings
@@ -307,6 +318,113 @@ components:
         - status
         - models
       title: HealthResponse
+    MetricsRecent:
+      properties:
+        route:
+          type: string
+          title: Route
+        method:
+          type: string
+          title: Method
+        status:
+          type: integer
+          title: Status
+        ok:
+          type: boolean
+          title: Ok
+        duration_ms:
+          type: integer
+          title: Duration Ms
+        timestamp_ms:
+          type: integer
+          title: Timestamp Ms
+      type: object
+      required:
+        - route
+        - method
+        - status
+        - ok
+        - duration_ms
+        - timestamp_ms
+      title: MetricsRecent
+    MetricsRoute:
+      properties:
+        route:
+          type: string
+          title: Route
+        calls:
+          type: integer
+          title: Calls
+        success:
+          type: integer
+          title: Success
+        failure:
+          type: integer
+          title: Failure
+        average_ms:
+          type: number
+          title: Average Ms
+        last_status:
+          type: integer
+          title: Last Status
+        last_seen_ms:
+          type: integer
+          title: Last Seen Ms
+      type: object
+      required:
+        - route
+        - calls
+        - success
+        - failure
+        - average_ms
+        - last_status
+        - last_seen_ms
+      title: MetricsRoute
+    MetricsSnapshot:
+      properties:
+        totals:
+          $ref: "#/components/schemas/MetricsTotals"
+        routes:
+          items:
+            $ref: "#/components/schemas/MetricsRoute"
+          type: array
+          title: Routes
+        recent:
+          items:
+            $ref: "#/components/schemas/MetricsRecent"
+          type: array
+          title: Recent
+      type: object
+      required:
+        - totals
+        - routes
+        - recent
+      title: MetricsSnapshot
+    MetricsTotals:
+      properties:
+        calls:
+          type: integer
+          title: Calls
+        success:
+          type: integer
+          title: Success
+        failure:
+          type: integer
+          title: Failure
+        average_ms:
+          type: number
+          title: Average Ms
+        tracked_routes:
+          type: integer
+          title: Tracked Routes
+      type: object
+      required:
+        - calls
+        - success
+        - failure
+        - average_ms
+        - tracked_routes
+      title: MetricsTotals
     ModelInfo:
       properties:
         name:
