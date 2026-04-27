@@ -23,6 +23,17 @@
 - Docker: `docker compose up --build`
 - On Windows, Cargo uses `rust-lld` from `.cargo/config.toml`; do not change the linker unless you mean to.
 
+
+## Code Structure (SOLID Implementation)
+- Max File Length: Strictly keep components under 300 lines. If a file grows larger, refactor by extracting logic into Custom Hooks and UI into Sub-components.
+- Separation of Concerns: - Move business logic/data fetching out of the UI layer.
+- Use utils/ for pure helper functions and hooks/ for reusable stateful logic.
+- Composition over Inheritance: Prefer using children to build complex layouts instead of massive - "God Components" with dozens of conditional props.
+
+
+
+Clean Props: Pass only the minimum required data to child components to satisfy the Interface Segregation Principle.
+
 ## Runtime config
 
 - Startup always loads `.env`.
@@ -39,7 +50,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **EmbeddingServer** (365 symbols, 758 relationships, 29 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **EmbeddingServer** (369 symbols, 770 relationships, 30 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

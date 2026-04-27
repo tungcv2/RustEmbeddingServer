@@ -530,27 +530,143 @@ const INDEX_HTML: &str = r#"<!doctype html>
       padding: 10px 14px;
     }
 
-    .docs {
+    .docs-browser {
+      width: min(980px, 100%);
+      padding: 20px;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px;
-      width: min(820px, 100%);
     }
 
-    .doc-card {
-      padding: 18px;
+    .docs-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: end;
+    }
+
+    .docs-toolbar .field {
+      gap: 6px;
+    }
+
+    .docs-toolbar button {
+      align-self: end;
+      white-space: nowrap;
+    }
+
+    .docs-panel {
+      display: grid;
+      gap: 18px;
+      padding-top: 2px;
+    }
+
+    .docs-header {
+      display: grid;
+      gap: 10px;
+    }
+
+    .docs-header-top {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .docs-title {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .docs-url {
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #111111;
+      color: #f1f1f1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .docs-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .docs-section {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
       display: grid;
       gap: 12px;
+      align-content: start;
     }
 
-    .doc-card code {
-      display: inline-flex;
-      width: fit-content;
-      padding: 5px 8px;
-      border-radius: 6px;
-      background: #1d1d1d;
+    .docs-section h4 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.01em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .schema-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .schema-row {
+      padding: 12px 14px;
       border: 1px solid var(--line);
-      color: #f0f0f0;
+      border-radius: 12px;
+      background: #121212;
+      display: grid;
+      gap: 6px;
+    }
+
+    .schema-row-top {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .schema-row-name {
+      font-weight: 700;
+    }
+
+    .schema-row-type {
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.04);
+      color: #ececec;
+      font-size: 12px;
+    }
+
+    .schema-row-note {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .docs-example {
+      margin: 0;
+      min-height: 160px;
+      max-height: 300px;
+      overflow: auto;
+      background: #0b0b0b;
+    }
+
+    .docs-full {
+      grid-column: 1 / -1;
+    }
+
+    .docs-note {
+      color: var(--muted-2);
       font-size: 12px;
     }
 
@@ -616,7 +732,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     @media (max-width: 1100px) {
-      .models-wrap, .models-grid, .docs { grid-template-columns: 1fr; }
+      .models-wrap, .models-grid, .docs-grid, .docs-toolbar { grid-template-columns: 1fr; }
       .models-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .content { padding-inline: 20px; }
     }
@@ -635,7 +751,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-title">PyEmbedding <span class="version">v1.0.0</span></div>
+        <div class="brand-title">Embedding<span class="version">v1.0.0</span></div>
       </div>
 
       <nav class="nav" aria-label="Primary">
@@ -746,44 +862,48 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <section class="page" id="page-docs">
           <div class="page-head">
             <h1>API Docs</h1>
-            <p>Tổng hợp nhanh các endpoint đang nhúng trong server.</p>
+            <p>Chọn API từ dropdown để xem hướng dẫn chi tiết và copy toàn bộ nội dung.</p>
           </div>
 
-          <div class="docs">
-            <div class="card doc-card">
-              <h3>/v1/embeddings</h3>
-              <code>POST</code>
-              <div class="subtle">OpenAI-compatible embeddings.</div>
+          <div class="card docs-browser">
+            <div class="docs-toolbar">
+              <div class="field">
+                <label for="docsSelect">API</label>
+                <select id="docsSelect"></select>
+                <div class="helper">Mỗi mục bao gồm URL, input schema, output schema và ví dụ dùng nhanh.</div>
+              </div>
+              <button type="button" class="primary" id="copyDocGuide">Copy hướng dẫn</button>
             </div>
-            <div class="card doc-card">
-              <h3>/api/embeddings</h3>
-              <code>POST</code>
-              <div class="subtle">Ollama-style embedding payload.</div>
-            </div>
-            <div class="card doc-card">
-              <h3>/api/rerank</h3>
-              <code>POST</code>
-              <div class="subtle">Rerank danh sách documents.</div>
-            </div>
-            <div class="card doc-card">
-              <h3>/api/embeddings/sparse</h3>
-              <code>POST</code>
-              <div class="subtle">Sparse embeddings cho text ngắn.</div>
-            </div>
-            <div class="card doc-card">
-              <h3>/api/embeddings/colbert</h3>
-              <code>POST</code>
-              <div class="subtle">ColBERT embeddings theo token.</div>
-            </div>
-            <div class="card doc-card">
-              <h3>/v1/models</h3>
-              <code>GET</code>
-              <div class="subtle">Đọc metadata từ AI_Models/*/metadata.json.</div>
-            </div>
-            <div class="card doc-card">
-              <h3>/api/tokens/count</h3>
-              <code>POST</code>
-              <div class="subtle">Đếm token cho một đoạn text.</div>
+
+            <div class="docs-panel" id="docsPanel">
+              <div class="docs-header">
+                <div class="docs-header-top">
+                  <span class="tag" id="docsMethod">POST</span>
+                  <span class="subtle" id="docsSummary">-</span>
+                </div>
+                <h3 class="docs-title" id="docsTitle">-</h3>
+                <div class="docs-url" id="docsUrl">-</div>
+                <div class="docs-note">Bấm nút copy để sao chép toàn bộ hướng dẫn đang chọn.</div>
+              </div>
+
+              <div class="docs-grid">
+                <section class="docs-section">
+                  <h4>Input schema</h4>
+                  <div class="schema-list" id="docsInputSchema"></div>
+                </section>
+                <section class="docs-section">
+                  <h4>Output schema</h4>
+                  <div class="schema-list" id="docsOutputSchema"></div>
+                </section>
+                <section class="docs-section docs-full">
+                  <h4>Ví dụ request</h4>
+                  <pre class="docs-example" id="docsRequestExample"></pre>
+                </section>
+                <section class="docs-section docs-full">
+                  <h4>Ví dụ response</h4>
+                  <pre class="docs-example" id="docsResponseExample"></pre>
+                </section>
+              </div>
             </div>
           </div>
         </section>
@@ -810,6 +930,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
       responseTime: document.getElementById('responseTime'),
       copyResponse: document.getElementById('copyResponse'),
       clearResponse: document.getElementById('clearResponse'),
+      docsSelect: document.getElementById('docsSelect'),
+      copyDocGuide: document.getElementById('copyDocGuide'),
+      docsPanel: document.getElementById('docsPanel'),
+      docsMethod: document.getElementById('docsMethod'),
+      docsSummary: document.getElementById('docsSummary'),
+      docsTitle: document.getElementById('docsTitle'),
+      docsUrl: document.getElementById('docsUrl'),
+      docsInputSchema: document.getElementById('docsInputSchema'),
+      docsOutputSchema: document.getElementById('docsOutputSchema'),
+      docsRequestExample: document.getElementById('docsRequestExample'),
+      docsResponseExample: document.getElementById('docsResponseExample'),
       modelGrid: document.getElementById('modelGrid'),
       modelsTotal: document.getElementById('modelsTotal'),
       modelsLoaded: document.getElementById('modelsLoaded'),
@@ -892,10 +1023,223 @@ const INDEX_HTML: &str = r#"<!doctype html>
       },
     ];
 
+    const docsEndpoints = [
+      {
+        id: 'openai_embeddings',
+        label: '/v1/embeddings',
+        method: 'POST',
+        summary: 'OpenAI-compatible embeddings.',
+        inputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Model đã nạp từ registry.' },
+          { name: 'input', type: 'string | string[]', required: true, note: 'Một câu hoặc nhiều câu.' },
+          { name: 'user', type: 'string | null', required: false, note: 'Tùy chọn.' },
+        ],
+        outputSchema: [
+          { name: 'object', type: 'string', required: true, note: 'Giá trị mặc định: list' },
+          { name: 'data', type: 'OpenAIEmbeddingData[]', required: true, note: 'Danh sách vector embedding.' },
+          { name: 'model', type: 'string', required: true, note: 'Tên model trả về.' },
+          { name: 'usage', type: 'OpenAIUsage', required: true, note: 'Thông tin token.' },
+        ],
+        requestExample: `{
+  "model": "text-embedding-3-small",
+  "input": "Xin chào"
+}`,
+        responseExample: `{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.01, 0.02]
+    }
+  ],
+  "model": "text-embedding-3-small",
+  "usage": {
+    "prompt_tokens": 2,
+    "total_tokens": 2
+  }
+}`,
+      },
+      {
+        id: 'ollama_embeddings',
+        label: '/api/embeddings',
+        method: 'POST',
+        summary: 'Ollama-style embedding payload.',
+        inputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Model cần nạp.' },
+          { name: 'prompt', type: 'string', required: true, note: 'Chuỗi đầu vào.' },
+          { name: 'options', type: 'object | null', required: false, note: 'Tùy chọn cấu hình.' },
+          { name: 'keep_alive', type: 'string | null', required: false, note: 'Giữ model trong bộ nhớ.' },
+        ],
+        outputSchema: [
+          { name: 'embedding', type: 'number[]', required: true, note: 'Vector embedding.' },
+        ],
+        requestExample: `{
+  "model": "my-model",
+  "prompt": "Xin chào",
+  "options": { "temperature": 0.1 }
+}`,
+        responseExample: `{
+  "embedding": [0.01, 0.02]
+}`,
+      },
+      {
+        id: 'sparse_embeddings',
+        label: '/api/embeddings/sparse',
+        method: 'POST',
+        summary: 'Sparse embeddings cho text ngắn.',
+        inputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Model sparse embedding.' },
+          { name: 'input', type: 'string | string[]', required: true, note: 'Text đầu vào.' },
+        ],
+        outputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Tên model.' },
+          { name: 'data', type: 'SparseEmbeddingData[]', required: true, note: 'Sparse vector theo index/value.' },
+        ],
+        requestExample: `{
+  "model": "sparse-model",
+  "input": "Xin chào"
+}`,
+        responseExample: `{
+  "model": "sparse-model",
+  "data": [
+    {
+      "index": 0,
+      "indices": [1, 5, 8],
+      "values": [0.2, 0.1, 0.05]
+    }
+  ]
+}`,
+      },
+      {
+        id: 'colbert_embeddings',
+        label: '/api/embeddings/colbert',
+        method: 'POST',
+        summary: 'ColBERT embeddings theo token.',
+        inputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Model ColBERT.' },
+          { name: 'input', type: 'string | string[]', required: true, note: 'Chuỗi hoặc mảng chuỗi.' },
+        ],
+        outputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Tên model.' },
+          { name: 'data', type: 'ColBERTEmbeddingData[]', required: true, note: 'Embedding theo token.' },
+          { name: 'tokens', type: 'string[][] | null', required: false, note: 'Token gốc nếu có.' },
+        ],
+        requestExample: `{
+  "model": "colbert-model",
+  "input": ["Xin chào", "Embedding test"]
+}`,
+        responseExample: `{
+  "model": "colbert-model",
+  "data": [
+    {
+      "index": 0,
+      "embeddings": [[0.1, 0.2]]
+    }
+  ],
+  "tokens": [["Xin", "chào"]]
+}`,
+      },
+      {
+        id: 'rerank',
+        label: '/api/rerank',
+        method: 'POST',
+        summary: 'Rerank danh sách documents.',
+        inputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Model rerank.' },
+          { name: 'query', type: 'string', required: true, note: 'Truy vấn cần xếp hạng.' },
+          { name: 'documents', type: 'string[]', required: true, note: 'Danh sách tài liệu.' },
+          { name: 'top_n', type: 'integer | null', required: false, note: 'Số kết quả trả về.' },
+          { name: 'return_documents', type: 'boolean | null', required: false, note: 'Trả lại nội dung tài liệu.' },
+        ],
+        outputSchema: [
+          { name: 'model', type: 'string', required: true, note: 'Tên model.' },
+          { name: 'results', type: 'RerankResult[]', required: true, note: 'Danh sách kết quả đã sắp xếp.' },
+        ],
+        requestExample: `{
+  "model": "rerank-model",
+  "query": "embedding",
+  "documents": ["Document 1", "Document 2"],
+  "top_n": 2,
+  "return_documents": true
+}`,
+        responseExample: `{
+  "model": "rerank-model",
+  "results": [
+    {
+      "index": 0,
+      "document": "Document 1",
+      "score": 0.98
+    }
+  ]
+}`,
+      },
+      {
+        id: 'token_count',
+        label: '/api/tokens/count',
+        method: 'POST',
+        summary: 'Đếm token cho một đoạn text.',
+        inputSchema: [
+          { name: 'text', type: 'string', required: true, note: 'Nội dung cần đếm token.' },
+        ],
+        outputSchema: [
+          { name: 'count', type: 'integer', required: true, note: 'Số token.' },
+          { name: 'model', type: 'string', required: true, note: 'Model được dùng để đếm.' },
+        ],
+        requestExample: `{
+  "text": "Xin chào, tôi cần đếm token."
+}`,
+        responseExample: `{
+  "count": 7,
+  "model": "token-model"
+}`,
+      },
+      {
+        id: 'openai_models',
+        label: '/v1/models',
+        method: 'GET',
+        summary: 'Liệt kê model theo kiểu OpenAI.',
+        inputSchema: [],
+        outputSchema: [
+          { name: 'object', type: 'string', required: true, note: 'Giá trị mặc định: list' },
+          { name: 'data', type: 'OpenAIModelData[]', required: true, note: 'Danh sách model.' },
+        ],
+        requestExample: `GET /v1/models`,
+        responseExample: `{
+  "object": "list",
+  "data": [
+    {
+      "id": "text-embedding-3-small",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai"
+    }
+  ]
+}`,
+      },
+      {
+        id: 'health',
+        label: '/health',
+        method: 'GET',
+        summary: 'Kiểm tra trạng thái server và model registry.',
+        inputSchema: [],
+        outputSchema: [
+          { name: 'status', type: 'string', required: true, note: 'Trạng thái tổng quát.' },
+          { name: 'models', type: 'ModelInfo[]', required: true, note: 'Danh sách model hiện có.' },
+        ],
+        requestExample: `GET /health`,
+        responseExample: `{
+  "status": "ok",
+  "models": []
+}`,
+      },
+    ];
+
     const state = {
       models: [],
       activeView: 'embeddings',
       endpointId: 'openai_embeddings',
+      docsEndpointId: 'openai_embeddings',
       requestMode: 'form',
     };
 
@@ -1195,6 +1539,84 @@ const INDEX_HTML: &str = r#"<!doctype html>
       updateEndpointView();
     }
 
+    function selectedDocsEndpoint() {
+      return docsEndpoints.find((endpoint) => endpoint.id === state.docsEndpointId) || docsEndpoints[0];
+    }
+
+    function renderSchemaRows(items) {
+      if (!items.length) {
+        return '<div class="subtle">Không có schema.</div>';
+      }
+
+      return items.map((item) => `
+        <div class="schema-row">
+          <div class="schema-row-top">
+            <span class="schema-row-name">${escapeHtml(item.name)}</span>
+            <span class="schema-row-type">${escapeHtml(item.type)}</span>
+            ${item.required ? '<span class="tag loaded">required</span>' : '<span class="tag idle">optional</span>'}
+          </div>
+          ${item.note ? `<div class="schema-row-note">${escapeHtml(item.note)}</div>` : ''}
+        </div>
+      `).join('');
+    }
+
+    function renderDocsPicker() {
+      els.docsSelect.innerHTML = '';
+      for (const endpoint of docsEndpoints) {
+        const option = document.createElement('option');
+        option.value = endpoint.id;
+        option.textContent = `${endpoint.method} ${endpoint.label}`;
+        els.docsSelect.appendChild(option);
+      }
+      els.docsSelect.value = state.docsEndpointId;
+      updateDocsView();
+    }
+
+    function formatDocsGuide(endpoint) {
+      const inputSchema = endpoint.inputSchema.length
+        ? endpoint.inputSchema.map((item) => `- ${item.name}: ${item.type}${item.required ? ' (required)' : ''}${item.note ? ` - ${item.note}` : ''}`).join('\n')
+        : '- Không có input body.';
+      const outputSchema = endpoint.outputSchema.length
+        ? endpoint.outputSchema.map((item) => `- ${item.name}: ${item.type}${item.required ? ' (required)' : ''}${item.note ? ` - ${item.note}` : ''}`).join('\n')
+        : '- Không có output schema.';
+
+      return [
+        `${endpoint.method} ${endpoint.label}`,
+        '',
+        endpoint.summary,
+        '',
+        'Input schema:',
+        inputSchema,
+        '',
+        'Output schema:',
+        outputSchema,
+        '',
+        'Ví dụ request:',
+        endpoint.requestExample,
+        '',
+        'Ví dụ response:',
+        endpoint.responseExample,
+      ].join('\n');
+    }
+
+    function updateDocsView() {
+      const endpoint = selectedDocsEndpoint();
+      els.docsMethod.textContent = endpoint.method;
+      els.docsSummary.textContent = endpoint.summary;
+      els.docsTitle.textContent = endpoint.label;
+      els.docsUrl.textContent = `${endpoint.method} ${endpoint.label}`;
+      els.docsInputSchema.innerHTML = renderSchemaRows(endpoint.inputSchema);
+      els.docsOutputSchema.innerHTML = renderSchemaRows(endpoint.outputSchema);
+      els.docsRequestExample.textContent = endpoint.requestExample;
+      els.docsResponseExample.textContent = endpoint.responseExample;
+    }
+
+    async function copyDocsGuide() {
+      const endpoint = selectedDocsEndpoint();
+      await navigator.clipboard.writeText(formatDocsGuide(endpoint));
+      setStatus(`Đã copy hướng dẫn ${endpoint.label}`, 'ok');
+    }
+
     function updateEndpointView() {
       const endpoint = selectedEndpoint();
       renderEndpointForm(endpoint);
@@ -1435,6 +1857,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
       button.addEventListener('click', () => setView(button.dataset.view));
     });
 
+    els.docsSelect.addEventListener('change', () => {
+      state.docsEndpointId = els.docsSelect.value;
+      updateDocsView();
+    });
+
+    els.copyDocGuide.addEventListener('click', () => copyDocsGuide().catch(handleError));
+
     els.endpointSelect.addEventListener('change', () => {
       state.endpointId = els.endpointSelect.value;
       updateEndpointView();
@@ -1482,6 +1911,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     });
 
     renderEndpointPicker();
+    renderDocsPicker();
     updateEndpointView();
     syncRawJsonTemplate();
     refreshModels()
