@@ -33,6 +33,8 @@ pub fn router(registry: ModelRegistry, config: AppConfig) -> Router {
     };
     Router::new()
         .route("/", get(frontend::index))
+        .route("/frontend.css", get(frontend::stylesheet))
+        .route("/frontend.js", get(frontend::script))
         .route("/health", get(health))
         .route("/v1/models", get(list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -67,7 +69,7 @@ async fn record_metrics(
 }
 
 fn should_skip_metrics(method: &Method, path: &str) -> bool {
-    *method == Method::OPTIONS || path == "/" || path == "/api/metrics"
+    *method == Method::OPTIONS || path == "/" || path == "/frontend.css" || path == "/frontend.js" || path == "/api/metrics"
 }
 
 pub async fn health(

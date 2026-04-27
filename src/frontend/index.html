@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Embedding API Server Studio</title>
+  <link rel="stylesheet" href="/frontend.css" />
+  <script defer src="/frontend.js"></script>
+  <!-- /api/tokens/count Raw JSON Metrics -->
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-title">Embedding<span class="version">v1.0.0</span></div>
+      </div>
+
+      <nav class="nav" aria-label="Primary">
+        <button class="active" data-view="embeddings">Embeddings</button>
+        <button data-view="models">Models</button>
+        <button data-view="metrics">Metrics</button>
+        <button data-view="docs">API Docs</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="chip"><span class="dot" id="healthDot"></span><span id="healthText">Health: checking...</span></div>
+        <div class="chip">Port <strong>34749</strong></div>
+        <div class="chip">Models <strong id="sidebarModelCount">0</strong></div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="content-inner">
+        <section class="page active" id="page-embeddings">
+          <div class="page-head">
+            <h1>API Tester</h1>
+            <p>Thử nghiệm các endpoint embedding trực tiếp từ trình duyệt.</p>
+          </div>
+
+          <div class="card tester">
+            <div class="field">
+              <label for="endpointSelect">Endpoint</label>
+              <select id="endpointSelect"></select>
+              <div class="helper" id="endpointHelp"></div>
+            </div>
+
+            <div class="tab-row" role="tablist" aria-label="Request mode">
+              <button type="button" class="active" data-mode="form">Form mode</button>
+              <button type="button" data-mode="json">Raw JSON</button>
+            </div>
+
+            <div class="endpoint-schema card" id="endpointSchema">
+              <div class="subtle" id="endpointSchemaLabel">Schema</div>
+              <div class="schema-title" id="endpointSchemaTitle">-</div>
+              <div class="schema-fields" id="endpointSchemaFields"></div>
+            </div>
+
+            <div class="field-grid" id="formMode"></div>
+
+            <div class="field-grid hidden" id="jsonMode">
+              <div class="field">
+                <label for="rawJsonInput">Raw JSON</label>
+                <textarea id="rawJsonInput" placeholder="{\n  \"model\": \"...\"\n}"></textarea>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="primary" id="sendRequest">Gửi request</button>
+              <button id="refreshModels">Refresh models</button>
+              <button id="checkHealth">Health</button>
+            </div>
+
+            <div class="subtle" id="requestMeta">Sẵn sàng</div>
+          </div>
+
+          <div class="card response">
+            <div class="status-line"><span class="dot" id="responseDot"></span><span id="responseMode">JSON response</span></div>
+            <div class="response-meta">
+              <span id="responseEndpoint">Endpoint: -</span>
+              <span id="responseStatus">Status: -</span>
+              <span id="responseTime">Time: -</span>
+            </div>
+            <pre id="output">Chưa có dữ liệu phản hồi.</pre>
+            <div class="actions">
+              <button id="copyResponse">Copy</button>
+              <button id="clearResponse">Clear</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-models">
+          <div class="page-head models-head">
+            <div>
+              <h1>Models List</h1>
+              <p>Danh sách model được nạp từ registry, kèm trạng thái và khả năng hỗ trợ.</p>
+            </div>
+            <div class="models-summary">
+              <div class="summary-card">
+                <span class="label">Tổng model</span>
+                <strong class="value" id="modelsTotal">0</strong>
+                <span class="hint">Trong thư mục `AI_Models/`</span>
+              </div>
+              <div class="summary-card">
+                <span class="label">Đang tải</span>
+                <strong class="value" id="modelsLoaded">0</strong>
+                <span class="hint">Sẵn sàng nhận request</span>
+              </div>
+              <div class="summary-card">
+                <span class="label">Capabilities</span>
+                <strong class="value" id="modelsCapabilities">0</strong>
+                <span class="hint">Tổng loại tính năng</span>
+              </div>
+              <div class="summary-card">
+                <span class="label">Dim lớn nhất</span>
+                <strong class="value" id="modelsMaxDim">-</strong>
+                <span class="hint">Kích thước embedding cao nhất</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="models-grid" id="modelGrid"></div>
+        </section>
+
+        <section class="page" id="page-metrics">
+          <div class="page-head">
+            <h1>API Metrics</h1>
+            <p>Theo dõi số lần gọi, latency trung bình và 100 request gần nhất, chỉ lưu kết quả success/fail.</p>
+          </div>
+
+          <div class="metrics-summary">
+            <div class="summary-card">
+              <span class="label">Tổng request</span>
+              <strong class="value" id="metricsTotalCalls">0</strong>
+              <span class="hint">Tất cả API đang được track</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">Latency TB</span>
+              <strong class="value" id="metricsAvgMs">0.0</strong>
+              <span class="hint">Milliseconds trung bình</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">Tỉ lệ thành công</span>
+              <strong class="value" id="metricsSuccessRate">0%</strong>
+              <span class="hint">Success / tổng request</span>
+            </div>
+            <div class="summary-card">
+              <span class="label">100 gần nhất</span>
+              <strong class="value" id="metricsRecentCount">0</strong>
+              <span class="hint" id="metricsUpdatedAt">Chưa tải dữ liệu</span>
+            </div>
+          </div>
+
+          <div class="card metrics-panel">
+            <div class="metrics-panel-head">
+              <div>
+                <div class="label">By API</div>
+                <h3>Thống kê theo endpoint</h3>
+              </div>
+              <div class="subtle">Tổng số route: <strong id="metricsRouteCount">0</strong></div>
+            </div>
+            <div class="metrics-table-wrap">
+              <table class="metrics-table">
+                <thead>
+                  <tr>
+                    <th>API</th>
+                    <th>Calls</th>
+                    <th>Avg ms</th>
+                    <th>Success</th>
+                    <th>Fail</th>
+                    <th>Last</th>
+                  </tr>
+                </thead>
+                <tbody id="metricsRoutesBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card metrics-panel">
+            <div class="metrics-panel-head">
+              <div>
+                <div class="label">Recent 100</div>
+                <h3>Kết quả gần nhất</h3>
+              </div>
+              <div class="subtle">Chỉ lưu status và thời gian xử lý</div>
+            </div>
+            <div class="metrics-table-wrap">
+              <table class="metrics-table">
+                <thead>
+                  <tr>
+                    <th>API</th>
+                    <th>Result</th>
+                    <th>Duration</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody id="metricsRecentBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-docs">
+          <div class="page-head">
+            <h1>API Docs</h1>
+            <p>Chọn API từ dropdown để xem hướng dẫn chi tiết và copy toàn bộ nội dung.</p>
+          </div>
+
+          <div class="card docs-browser">
+            <div class="docs-toolbar">
+              <div class="field">
+                <label for="docsSelect">API</label>
+                <select id="docsSelect"></select>
+                <div class="helper">Mỗi mục bao gồm URL, input schema, output schema và ví dụ dùng nhanh.</div>
+              </div>
+              <button type="button" class="primary" id="copyDocGuide">Copy hướng dẫn</button>
+            </div>
+
+            <div class="docs-panel" id="docsPanel">
+              <div class="docs-header">
+                <div class="docs-header-top">
+                  <span class="tag" id="docsMethod">POST</span>
+                  <span class="subtle" id="docsSummary">-</span>
+                </div>
+                <h3 class="docs-title" id="docsTitle">-</h3>
+                <div class="docs-url" id="docsUrl">-</div>
+                <div class="docs-note">Bấm nút copy để sao chép toàn bộ hướng dẫn đang chọn.</div>
+              </div>
+
+              <div class="docs-grid">
+                <section class="docs-section">
+                  <h4>Input schema</h4>
+                  <div class="schema-list" id="docsInputSchema"></div>
+                </section>
+                <section class="docs-section">
+                  <h4>Output schema</h4>
+                  <div class="schema-list" id="docsOutputSchema"></div>
+                </section>
+                <section class="docs-section docs-full">
+                  <h4>Ví dụ request</h4>
+                  <pre class="docs-example" id="docsRequestExample"></pre>
+                </section>
+                <section class="docs-section docs-full">
+                  <h4>Ví dụ response</h4>
+                  <pre class="docs-example" id="docsResponseExample"></pre>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

@@ -50,7 +50,7 @@ Clean Props: Pass only the minimum required data to child components to satisfy 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **EmbeddingServer** (370 symbols, 771 relationships, 30 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **EmbeddingServer** (567 symbols, 1234 relationships, 47 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
