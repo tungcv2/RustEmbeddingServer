@@ -10,18 +10,18 @@ COPY Docs ./Docs
 
 RUN cargo build --release
 
-FROM debian:bookworm-slim AS runtime
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 AS runtime
 WORKDIR /app
 
 RUN useradd -r -u 10001 -g nogroup appuser \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 python3-pip python3-venv \
     && python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir sentence-transformers onnxruntime \
-    && ORT_LIB=$(printf '%s\n' /opt/venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime.so.*) \
+    && /opt/venv/bin/pip install --no-cache-dir sentence-transformers onnxruntime-gpu \
+    && ORT_LIB=$(printf '%s\n' /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime.so.*) \
     && test -e "$ORT_LIB" \
     && ln -s "$ORT_LIB" /usr/local/lib/libonnxruntime.so \
-    && ln -s /opt/venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime_providers_shared.so /usr/local/lib/libonnxruntime_providers_shared.so \
+    && ln -s /opt/venv/lib/python3.10/site-packages/onnxruntime/capi/libonnxruntime_providers_shared.so /usr/local/lib/libonnxruntime_providers_shared.so \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/embedding-api-server /usr/local/bin/embedding-api-server
@@ -30,7 +30,7 @@ ENV RUST_LOG=info \
     BIND_ADDR=0.0.0.0:8000 \
     MODELS_DIR=/app/AI_Models \
     PATH=/opt/venv/bin:$PATH \
-    LD_LIBRARY_PATH=/usr/local/lib:/opt/venv/lib/python3.11/site-packages/onnxruntime/capi
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/opt/venv/lib/python3.10/site-packages/onnxruntime/capi
 
 EXPOSE 8000
 

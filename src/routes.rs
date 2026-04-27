@@ -5,6 +5,7 @@ use crate::{
     metrics::{MetricsSnapshot, MetricsStore},
     registry::ModelRegistry,
 };
+use axum::response::Response;
 use axum::{
     body::Body,
     extract::State,
@@ -13,7 +14,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::response::Response;
 use serde_json::json;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -69,7 +69,11 @@ async fn record_metrics(
 }
 
 fn should_skip_metrics(method: &Method, path: &str) -> bool {
-    *method == Method::OPTIONS || path == "/" || path == "/frontend.css" || path == "/frontend.js" || path == "/api/metrics"
+    *method == Method::OPTIONS
+        || path == "/"
+        || path == "/frontend.css"
+        || path == "/frontend.js"
+        || path == "/api/metrics"
 }
 
 pub async fn health(

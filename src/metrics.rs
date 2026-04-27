@@ -85,7 +85,10 @@ impl MetricsStore {
         let duration_ms = duration.as_millis() as u64;
         let timestamp_ms = now_ms();
 
-        let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let stats = inner.routes.entry(route.clone()).or_default();
         let was_ok = ok;
 
@@ -123,7 +126,10 @@ impl MetricsStore {
     }
 
     pub fn snapshot(&self) -> MetricsSnapshot {
-        let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut routes: Vec<RouteSnapshot> = inner
             .routes

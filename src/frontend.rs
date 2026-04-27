@@ -11,12 +11,18 @@ pub async fn index() -> Html<&'static str> {
 }
 
 pub async fn stylesheet() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], assets::STYLES_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        assets::STYLES_CSS,
+    )
 }
 
 pub async fn script() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         assets::APP_JS,
     )
 }

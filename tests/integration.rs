@@ -3,10 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use embedding_api_server::{
-    backend::qwen3_rerank_prompt,
-    config::AppConfig,
-    error::AppError,
-    registry::ModelRegistry,
+    backend::qwen3_rerank_prompt, config::AppConfig, error::AppError, registry::ModelRegistry,
     routes,
 };
 use http_body_util::BodyExt;
@@ -142,18 +139,33 @@ async fn exposes_metrics_for_recent_requests() {
 
     let response = app
         .clone()
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let metrics_response = app
-        .oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(metrics_response.status(), StatusCode::OK);
-    let body = metrics_response.into_body().collect().await.unwrap().to_bytes();
+    let body = metrics_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["totals"]["calls"], 1);
     assert_eq!(json["totals"]["success"], 1);
@@ -243,7 +255,9 @@ async fn token_count_prefers_default_model() {
 fn qwen3_rerank_prompt_uses_expected_format() {
     let prompt = qwen3_rerank_prompt("what is rust", "a systems language");
 
-    assert!(prompt.contains("<Instruct>: Given a web search query, retrieve relevant passages that answer the query"));
+    assert!(prompt.contains(
+        "<Instruct>: Given a web search query, retrieve relevant passages that answer the query"
+    ));
     assert!(prompt.contains("<Query>: what is rust"));
     assert!(prompt.contains("<Document>: a systems language"));
     assert!(!prompt.contains("<|im_start|>system"));

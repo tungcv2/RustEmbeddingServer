@@ -4,6 +4,7 @@ use crate::{
 };
 use half::f16;
 use ort::{
+    ep::CUDA,
     memory::Allocator,
     session::{builder::GraphOptimizationLevel, Session},
     value::{DynValue, Tensor},
@@ -15,6 +16,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokenizers::Tokenizer;
 use tokio::task;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -36,7 +38,8 @@ struct RustModelRuntime {
     input_names: Vec<String>,
 }
 
-static RUST_RUNTIME_CACHE: OnceLock<Mutex<HashMap<String, Arc<RustModelRuntime>>>> = OnceLock::new();
+static RUST_RUNTIME_CACHE: OnceLock<Mutex<HashMap<String, Arc<RustModelRuntime>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct BackendManager {
@@ -110,8 +113,8 @@ pub async fn embed_texts(
         let runtime = runtime_for_model(&model_path, &model_file)?;
         infer_embeddings(&runtime, &texts, max_tokens)
     })
-        .await
-        .map_err(|error| AppError::Internal(format!("embedding worker failed: {error}")))?
+    .await
+    .map_err(|error| AppError::Internal(format!("embedding worker failed: {error}")))?
 }
 
 pub async fn rerank_documents(
@@ -163,7 +166,10 @@ fn runtime_for_model(model_path: &Path, model_file: &str) -> AppResult<Arc<RustM
 
     let runtime = Arc::new(load_runtime(model_path, model_file)?);
     let mut cache = runtime_cache().lock().unwrap();
-    Ok(cache.entry(cache_key).or_insert_with(|| Arc::clone(&runtime)).clone())
+    Ok(cache
+        .entry(cache_key)
+        .or_insert_with(|| Arc::clone(&runtime))
+        .clone())
 }
 
 fn runtime_cache() -> &'static Mutex<HashMap<String, Arc<RustModelRuntime>>> {
@@ -177,25 +183,10 @@ fn runtime_cache_key(model_path: &Path, model_file: &str) -> String {
 fn load_runtime(model_path: &Path, model_file: &str) -> AppResult<RustModelRuntime> {
     let tokenizer = Arc::new(load_tokenizer(model_path)?);
     let model_file_path = model_path.join(model_file);
-    let builder = Session::builder()
-        .map_err(|error| AppError::Internal(format!("failed to create ONNX session builder: {error}")))?;
-    let builder = if model_file.contains("fp16") {
-        builder
-            .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|error| {
-                AppError::Internal(format!("failed to configure ONNX session builder: {error}"))
-            })?
-    } else {
-        builder
-    };
-    let session = builder
-        .commit_from_file(&model_file_path)
-        .map_err(|error| {
-            AppError::Internal(format!(
-                "failed to load ONNX model {}: {error}",
-                model_file_path.display()
-            ))
-        })?;
+    let use_gpu = std::env::var("USE_GPU")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true);
+    let session = load_session(&model_file_path, model_file, use_gpu)?;
 
     let input_names = session
         .inputs()
@@ -208,6 +199,68 @@ fn load_runtime(model_path: &Path, model_file: &str) -> AppResult<RustModelRunti
         session: Mutex::new(session),
         input_names,
     })
+}
+
+fn load_session(model_file_path: &Path, model_file: &str, use_gpu: bool) -> AppResult<Session> {
+    let build_session = |enable_cuda: bool| -> Result<Session, String> {
+        let builder = Session::builder().map_err(|error| error.to_string())?;
+        let builder = if model_file.contains("fp16") {
+            builder
+                .with_optimization_level(GraphOptimizationLevel::Disable)
+                .map_err(|error| error.to_string())?
+        } else {
+            builder
+        };
+        let builder = if enable_cuda {
+            match builder.clone().with_execution_providers([CUDA::default().build()]) {
+                Ok(builder) => builder,
+                Err(error) => return Err(error.to_string()),
+            }
+        } else {
+            builder
+        };
+        builder
+            .commit_from_file(model_file_path)
+            .map_err(|error| error.to_string())
+    };
+
+    if use_gpu {
+        match build_session(true) {
+            Ok(session) => Ok(session),
+            Err(error) if should_fallback_to_cpu(&error) => {
+                warn!(
+                    "CUDA unavailable while loading {}: {error}; falling back to CPU",
+                    model_file_path.display()
+                );
+                build_session(false).map_err(|fallback_error| {
+                    AppError::Internal(format!(
+                        "failed to load ONNX model {}: {fallback_error}",
+                        model_file_path.display()
+                    ))
+                })
+            }
+            Err(error) => Err(AppError::Internal(format!(
+                "failed to load ONNX model {}: {error}",
+                model_file_path.display()
+            ))),
+        }
+    } else {
+        build_session(false).map_err(|error| {
+            AppError::Internal(format!(
+                "failed to load ONNX model {}: {error}",
+                model_file_path.display()
+            ))
+        })
+    }
+}
+
+fn should_fallback_to_cpu(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("cuda failure")
+        || error.contains("cuda driver version is insufficient")
+        || error.contains("cuda error")
+        || error.contains("execution provider unavailable")
+        || error.contains("cuda") && error.contains("driver")
 }
 
 fn load_tokenizer(model_path: &Path) -> AppResult<Tokenizer> {
@@ -243,10 +296,9 @@ fn infer_embeddings(
         .into_iter()
         .next()
         .ok_or_else(|| AppError::Internal("embedding model returned no outputs".to_string()))?;
-    let (shape, values) = output
-        .1
-        .try_extract_tensor::<f32>()
-        .map_err(|error| AppError::Internal(format!("failed to read embedding output tensor: {error}")))?;
+    let (shape, values) = output.1.try_extract_tensor::<f32>().map_err(|error| {
+        AppError::Internal(format!("failed to read embedding output tensor: {error}"))
+    })?;
     let dims: Vec<usize> = shape.iter().map(|dim| *dim as usize).collect();
 
     match dims.as_slice() {
@@ -254,23 +306,33 @@ fn infer_embeddings(
             if *batch_size != batch.batch_size {
                 return Err(AppError::Internal(format!(
                     "embedding model returned {} rows for {} inputs",
-                    batch_size,
-                    batch.batch_size
+                    batch_size, batch.batch_size
                 )));
             }
-            Ok(values.chunks(*hidden_size).map(|row| row.to_vec()).collect())
+            Ok(values
+                .chunks(*hidden_size)
+                .map(|row| row.to_vec())
+                .collect())
         }
         [batch_size, seq_len, hidden_size] => {
             if *batch_size != batch.batch_size {
                 return Err(AppError::Internal(format!(
                     "embedding model returned {} rows for {} inputs",
-                    batch_size,
-                    batch.batch_size
+                    batch_size, batch.batch_size
                 )));
             }
-            Ok(pool_embeddings(values, *batch_size, *seq_len, *hidden_size, &batch.attention_mask))
+            Ok(pool_embeddings(
+                values,
+                *batch_size,
+                *seq_len,
+                *hidden_size,
+                &batch.attention_mask,
+            ))
         }
-        _ => Err(AppError::Internal(format!("unexpected embedding output shape: {:?}", dims))),
+        _ => Err(AppError::Internal(format!(
+            "unexpected embedding output shape: {:?}",
+            dims
+        ))),
     }
 }
 
@@ -350,7 +412,10 @@ fn infer_rerank_scores(
             }
             Ok(scores)
         }
-        _ => Err(AppError::Internal(format!("unexpected reranking output shape: {:?}", dims))),
+        _ => Err(AppError::Internal(format!(
+            "unexpected reranking output shape: {:?}",
+            dims
+        ))),
     }
 }
 
@@ -378,14 +443,12 @@ fn extract_qwen3_rerank_scores(
         )));
     }
 
-    let true_id = tokenizer
-        .token_to_id("yes")
-        .ok_or_else(|| AppError::Internal("qwen3 reranker tokenizer is missing token: yes".to_string()))?
-        as usize;
-    let false_id = tokenizer
-        .token_to_id("no")
-        .ok_or_else(|| AppError::Internal("qwen3 reranker tokenizer is missing token: no".to_string()))?
-        as usize;
+    let true_id = tokenizer.token_to_id("yes").ok_or_else(|| {
+        AppError::Internal("qwen3 reranker tokenizer is missing token: yes".to_string())
+    })? as usize;
+    let false_id = tokenizer.token_to_id("no").ok_or_else(|| {
+        AppError::Internal("qwen3 reranker tokenizer is missing token: no".to_string())
+    })? as usize;
 
     if true_id >= *vocab_size || false_id >= *vocab_size {
         return Err(AppError::Internal(format!(
@@ -427,7 +490,11 @@ struct PreparedBatch {
     seq_len: usize,
 }
 
-fn prepare_batch(tokenizer: &Tokenizer, texts: &[String], max_tokens: usize) -> AppResult<PreparedBatch> {
+fn prepare_batch(
+    tokenizer: &Tokenizer,
+    texts: &[String],
+    max_tokens: usize,
+) -> AppResult<PreparedBatch> {
     if texts.is_empty() {
         return Err(AppError::BadRequest("input must not be empty".to_string()));
     }
@@ -497,7 +564,9 @@ fn prepare_pair_batch(
     max_tokens: usize,
 ) -> AppResult<PreparedBatch> {
     if documents.is_empty() {
-        return Err(AppError::BadRequest("documents must not be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "documents must not be empty".to_string(),
+        ));
     }
 
     let mut batches = Vec::with_capacity(documents.len());
@@ -512,8 +581,9 @@ fn prepare_pair_batch(
         } else {
             let encoding = tokenizer
                 .encode((query, document.as_str()), true)
-                .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank input: {error}")))?
-            ;
+                .map_err(|error| {
+                    AppError::BadRequest(format!("failed to tokenize rerank input: {error}"))
+                })?;
             (
                 encoding
                     .get_ids()
@@ -568,9 +638,7 @@ fn prepare_pair_batch(
 }
 
 pub fn qwen3_rerank_prompt(query: &str, document: &str) -> String {
-    format!(
-        "<Instruct>: {QWEN3_RERANK_INSTRUCTION}\n<Query>: {query}\n<Document>: {document}"
-    )
+    format!("<Instruct>: {QWEN3_RERANK_INSTRUCTION}\n<Query>: {query}\n<Document>: {document}")
 }
 
 fn qwen3_rerank_input_ids(
@@ -582,7 +650,9 @@ fn qwen3_rerank_input_ids(
     let limit = max_tokens.max(1);
     let prefix_ids = tokenizer
         .encode(QWEN3_RERANK_PREFIX, false)
-        .map_err(|error| AppError::BadRequest(format!("failed to tokenize rerank prefix: {error}")))?
+        .map_err(|error| {
+            AppError::BadRequest(format!("failed to tokenize rerank prefix: {error}"))
+        })?
         .get_ids()
         .iter()
         .map(|id| *id as i64)
@@ -609,7 +679,8 @@ fn qwen3_rerank_input_ids(
 
 const QWEN3_RERANK_PREFIX: &str = "<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be \"yes\" or \"no\".\n<|im_end|>\n<|im_start|>user\n";
 const QWEN3_RERANK_SUFFIX: &str = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
-const QWEN3_RERANK_INSTRUCTION: &str = "Given a web search query, retrieve relevant passages that answer the query";
+const QWEN3_RERANK_INSTRUCTION: &str =
+    "Given a web search query, retrieve relevant passages that answer the query";
 
 fn qwen3_rerank_suffix_ids(tokenizer: &Tokenizer) -> AppResult<Vec<i64>> {
     tokenizer
@@ -618,7 +689,10 @@ fn qwen3_rerank_suffix_ids(tokenizer: &Tokenizer) -> AppResult<Vec<i64>> {
         .map(|encoding| encoding.get_ids().iter().map(|id| *id as i64).collect())
 }
 
-fn build_inputs(input_names: &[String], batch: &PreparedBatch) -> AppResult<HashMap<String, DynValue>> {
+fn build_inputs(
+    input_names: &[String],
+    batch: &PreparedBatch,
+) -> AppResult<HashMap<String, DynValue>> {
     let mut inputs = HashMap::new();
 
     for name in input_names {
@@ -629,32 +703,46 @@ fn build_inputs(input_names: &[String], batch: &PreparedBatch) -> AppResult<Hash
                 batch.input_ids.clone().into_boxed_slice(),
             ))
             .map(Into::into)
-            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            .map_err(|error| {
+                AppError::Internal(format!("failed to build tensor for {name}: {error}"))
+            })?,
             "attention_mask" => Tensor::from_array((
                 vec![batch.batch_size, batch.seq_len],
                 batch.attention_mask.clone().into_boxed_slice(),
             ))
             .map(Into::into)
-            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            .map_err(|error| {
+                AppError::Internal(format!("failed to build tensor for {name}: {error}"))
+            })?,
             "token_type_ids" | "segment_ids" => Tensor::from_array((
                 vec![batch.batch_size, batch.seq_len],
                 batch.token_type_ids.clone().into_boxed_slice(),
             ))
             .map(Into::into)
-            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            .map_err(|error| {
+                AppError::Internal(format!("failed to build tensor for {name}: {error}"))
+            })?,
             "position_ids" => Tensor::from_array((
                 vec![batch.batch_size, batch.seq_len],
                 batch.position_ids.clone().into_boxed_slice(),
             ))
             .map(Into::into)
-            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            .map_err(|error| {
+                AppError::Internal(format!("failed to build tensor for {name}: {error}"))
+            })?,
             _ if key.starts_with("past_key_values.")
                 && (key.ends_with(".key") || key.ends_with(".value")) =>
-            Tensor::<f32>::new(&Allocator::default(), [batch.batch_size, 8, 0, 128])
-            .map(Into::into)
-            .map_err(|error| AppError::Internal(format!("failed to build tensor for {name}: {error}")))?,
+            {
+                Tensor::<f32>::new(&Allocator::default(), [batch.batch_size, 8, 0, 128])
+                    .map(Into::into)
+                    .map_err(|error| {
+                        AppError::Internal(format!("failed to build tensor for {name}: {error}"))
+                    })?
+            }
             _ => {
-                return Err(AppError::Internal(format!("unsupported ONNX input name: {name}")));
+                return Err(AppError::Internal(format!(
+                    "unsupported ONNX input name: {name}"
+                )));
             }
         };
 
@@ -749,5 +837,14 @@ mod tests {
         };
 
         assert!(is_qwen3_reranker(&metadata));
+    }
+
+    #[test]
+    fn cuda_errors_trigger_cpu_fallback() {
+        assert!(should_fallback_to_cpu(
+            "CUDA failure 35: CUDA driver version is insufficient for CUDA runtime version"
+        ));
+        assert!(should_fallback_to_cpu("CUDA execution provider unavailable"));
+        assert!(!should_fallback_to_cpu("model file not found"));
     }
 }
