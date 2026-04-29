@@ -174,6 +174,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /api/models/refresh:
+    post:
+      summary: Refresh Models
+      operationId: refresh_models_api_models_refresh_post
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
 components:
   schemas:
     ColBERTEmbeddingData:

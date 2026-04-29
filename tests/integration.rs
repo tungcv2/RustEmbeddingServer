@@ -96,6 +96,45 @@ async fn lists_models_from_metadata() {
 }
 
 #[tokio::test]
+async fn refresh_models_route_discovers_new_models() {
+    let models_dir = temp_models_dir();
+    write_model(&models_dir, "model-a", "model.onnx");
+
+    let config = AppConfig {
+        models_dir: models_dir.clone(),
+        default_model: Some("model-a".to_string()),
+        model_ttl: Duration::from_secs(7200),
+        bind_addr: "127.0.0.1:8000".parse().unwrap(),
+    };
+    let registry = ModelRegistry::discover(&config).await.unwrap();
+    write_model(&models_dir, "model-b", "model.onnx");
+    let app = routes::router(registry, config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/refresh")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let models = json["models"].as_array().unwrap();
+    let names: Vec<&str> = models
+        .iter()
+        .filter_map(|model| model["name"].as_str())
+        .collect();
+
+    assert!(names.contains(&"model-a"));
+    assert!(names.contains(&"model-b"));
+}
+
+#[tokio::test]
 async fn serves_embedded_frontend() {
     let models_dir = temp_models_dir();
     write_model(&models_dir, "model-a", "model.onnx");

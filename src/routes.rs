@@ -36,6 +36,7 @@ pub fn router(registry: ModelRegistry, config: AppConfig) -> Router {
         .route("/frontend.css", get(frontend::stylesheet))
         .route("/frontend.js", get(frontend::script))
         .route("/health", get(health))
+        .route("/api/models/refresh", post(refresh_models))
         .route("/v1/models", get(list_models))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/api/embeddings", post(ollama_embeddings))
@@ -79,6 +80,13 @@ fn should_skip_metrics(method: &Method, path: &str) -> bool {
 pub async fn health(
     State(state): State<AppState>,
 ) -> Result<Json<crate::models::HealthResponse>, AppError> {
+    Ok(Json(state.registry.health().await))
+}
+
+pub async fn refresh_models(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::HealthResponse>, AppError> {
+    state.registry.refresh().await?;
     Ok(Json(state.registry.health().await))
 }
 

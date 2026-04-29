@@ -329,6 +329,22 @@ const docsEndpoints = [
 }`,
   },
   {
+    id: 'refresh_models',
+    label: '/api/models/refresh',
+    method: 'POST',
+    summary: 'Quét lại thư mục model và cập nhật registry.',
+    inputSchema: [],
+    outputSchema: [
+      { name: 'status', type: 'string', required: true, note: 'Trạng thái tổng quát.' },
+      { name: 'models', type: 'ModelInfo[]', required: true, note: 'Danh sách model sau khi refresh.' },
+    ],
+    requestExample: `POST /api/models/refresh`,
+    responseExample: `{
+  "status": "ok",
+  "models": []
+}`,
+  },
+  {
     id: 'api_metrics',
     label: '/api/metrics',
     method: 'GET',
@@ -1039,7 +1055,7 @@ function setView(view) {
 
 async function refreshModels() {
   setStatus('Đang tải models...');
-  const response = await fetch('/health');
+  const response = await fetch('/api/models/refresh', { method: 'POST' });
   const text = await response.text();
   let data = text;
   try { data = text ? JSON.parse(text) : null; } catch {}
